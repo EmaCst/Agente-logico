@@ -17,6 +17,17 @@ class AgenteRescate:
         # Objetos fijos
         self.mapa[3][3] = 1  # Obstáculo
         self.mapa[5][5] = 2  # Persona a rescatar
+
+        # 2. Colocar Persona en posición aleatoria
+        # Buscamos una celda que esté vacía (0) y que no sea la salida [0,0]
+        persona_colocada = False
+        while not persona_colocada:
+            f = random.randint(0, self.filas - 1)
+            c = random.randint(0, self.columnas - 1)
+            if self.mapa[f][c] == 0 and (f != 0 or c != 0):
+                self.mapa[f][c] = 2
+                self.posicion_persona = [f, c] # Guardamos la posición para la búsqueda
+                persona_colocada = True
         
         # Generar baterías aleatorias (Manejo de Incertidumbre)
         for f in range(self.filas):
@@ -61,6 +72,46 @@ class AgenteRescate:
                     cola.append(((nf, nc), camino + [(fila, col)]))
         return None
     
+    def buscar_a_estrella(self, objetivo):
+        # El objetivo es [fila, columna]
+        inicio = tuple(self.posicion_agente)
+        meta = tuple(objetivo)
+        
+        # Priority Queue: (prioridad f, posicion actual, camino, costo g)
+        # La prioridad f = g + h
+        frontera = [(0, inicio, [], 0)]
+        visitados = {} # Guardamos el costo 'g' más bajo para cada celda
+
+        while frontera:
+            f, (fila, col), camino, g = heapq.heappop(frontera)
+            
+            # Si llegamos a la meta
+            if (fila, col) == meta:
+                return camino + [(fila, col)]
+
+            # Si ya visitamos esta celda con un costo menor, ignoramos
+            if (fila, col) in visitados and visitados[(fila, col)] <= g:
+                continue
+            visitados[(fila, col)] = g
+
+            # Explorar vecinos
+            for df, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nf, nc = fila + df, col + dc
+                
+                # Verificar límites y obstáculos
+                if (0 <= nf < self.filas and 0 <= nc < self.columnas and 
+                    self.mapa[nf][nc] != 1):
+                    
+                    nuevo_g = g + 1 # Cada paso cuesta 1
+                    
+                    # Heurística: Distancia Manhattan (qué tan lejos está de la meta)
+                    h = abs(nf - meta[0]) + abs(nc - meta[1])
+                    
+                    nuevo_f = nuevo_g + h
+                    heapq.heappush(frontera, (nuevo_f, (nf, nc), camino + [(fila, col)], nuevo_g))
+        
+        return None # No se encontró camino
+
     def mover_agente(self, nueva_fila, nueva_columna):
         if 0 <= nueva_fila < self.filas and 0 <= nueva_columna < self.columnas:
             if self.mapa[nueva_fila][nueva_columna] != 1:
@@ -94,20 +145,20 @@ class AgenteRescate:
 
 if __name__ == "__main__":
     agente = AgenteRescate()
-    persona = [5, 5]
+    # Ahora obtenemos el objetivo directamente del mapa generado
+    objetivo = agente.posicion_persona 
     
-    print("--- SISTEMA DE IA: SELECCIÓN DE ALGORITMO ---")
-    print("1. BFS (Búsqueda No Informada - Más Corta)")
-    print("2. A* (Búsqueda Informada - Optimizada)")
+    print(f"--- INICIANDO MISIÓN DE RESCATE ---")
+    print(f"Persona localizada aleatoriamente en: {objetivo}")
     
-    opcion = input("Selecciona el tipo de búsqueda (1 o 2): ")
+    print("1. BFS (Búsqueda No Informada)")
+    print("2. A* (Búsqueda Informada)")
+    seleccion = input("Selecciona el algoritmo (1 o 2): ")
     
-    if opcion == "1":
-        print("\nEjecutando BFS...")
-        ruta = agente.buscar_bfs(persona)
+    if seleccion == "1":
+        ruta = agente.buscar_bfs(objetivo)
     else:
-        print("\nEjecutando A*...")
-        ruta = agente.buscar_a_estrella(persona)
+        ruta = agente.buscar_a_estrella(objetivo)
 
     if ruta:
         print(f"Ruta encontrada: {ruta}")
