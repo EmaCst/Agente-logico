@@ -42,22 +42,45 @@ async def solve(data: Mission):
     # Adaptación de coordenadas: de [x, y] de la interfaz a [fila, columna] del backend
     agente.posicion_agente = [data.start_pos[1], data.start_pos[0]] 
 
-    # 2. Reconstruimos el entorno usando los nombres de tus variables originales
+    # 2. Reconstruimos el entorno traduciendo los IDs para el buscador
     for y in range(filas):
         for x in range(columnas):
             celda_web = data.matrix[y][x]
-            agente.mapa_objetos[y][x] = celda_web.id  
             agente.mapa_clima[y][x] = celda_web.weather  
             
+            # CORRECCIÓN DE NOMBRES: 'mapa_objects' cambiado a 'mapa_objetos' para coincidir con tu backend
             if celda_web.id == 2:  
+                agente.mapa_objetos[y][x] = 2
                 agente.personas_pendientes.append([y, x])
             elif celda_web.id == 8:  
+                agente.mapa_objetos[y][x] = 8
                 agente.bases.append([y, x])
+            elif celda_web.id == 1:
+                # Los muros bloquean el paso en el buscador de Python
+                agente.mapa_objetos[y][x] = 1 
+            elif celda_web.id in [4, 5]:
+                # Las baterías son transitables. Les ponemos 0 para que 
+                # los métodos buscar_bfs y buscar_a_estrella no las traten como obstáculos.
+                agente.mapa_objetos[y][x] = 0 
+            else:
+                agente.mapa_objetos[y][x] = 0
 
-    if not agente.personas_pendientes:
-        return {"ruta": [], "error": "No has colocado ninguna persona en el mapa"}
+    # Validaciones de seguridad con respuesta sincronizada al frontend
+    if not list(agente.personas_pendientes):
+        return {"steps": [], "status": "No has colocado ninguna persona en el mapa interactivo"}
+        
+    if not list(agente.bases):
+        return {"steps": [], "status": "Falta colocar al menos una Zona Segura (Base) en el mapa"}
 
-    ruta_python = [list(agente.posicion_agente)]
+    # Lista que guardará el estado de TODO el entorno en cada movimiento del robot
+    historial_simulacion = []
+
+    # Guardamos el estado inicial (Paso 0) antes de comenzar a movernos
+    historial_simulacion.append({
+        "agent_pos": [agente.posicion_agente[1], agente.posicion_agente[0]], # [x, y] para React
+        "weather_matrix": [list(fila) for fila in agente.mapa_clima]          # Copia exacta del clima actual
+    })
+
     personas_a_procesar = list(agente.personas_pendientes)
     algoritmo_elegido = data.algorithm
 
@@ -76,9 +99,16 @@ async def solve(data: Mission):
             
         # El agente avanza hacia la persona consumiendo batería bajo tus lógicas climáticas
         for paso in ruta_persona[1:]:
-            ruta_python.append(list(paso))
-            agente.mover_agente(paso[0], paso[1])
-            if agente.bateria <= 0: break
+            agente.mover_agente(paso[0], paso[1]) # Al moverse, altera dinámicamente los climas del mapa
+            
+            # Registramos la posición y el estado del clima modificado tras este paso
+            historial_simulacion.append({
+                "agent_pos": [paso[1], paso[0]], 
+                "weather_matrix": [list(fila) for fila in agente.mapa_clima] 
+            })
+            
+            if agente.bateria <= 0: 
+                break
             
         # Si llega a la persona, recoge al pasajero y busca la base disponible
         if agente.posicion_agente == obj_p and agente.bateria > 0:
@@ -91,9 +121,16 @@ async def solve(data: Mission):
             if rutas_validas:
                 ruta_base = min(rutas_validas, key=len)
                 for paso in ruta_base[1:]:
-                    ruta_python.append(list(paso))
-                    agente.mover_agente(paso[0], paso[1])
-                    if agente.bateria <= 0: break
+                    agente.mover_agente(paso[0], paso[1]) # El clima se sigue alterando dinámicamente de regreso
+                    
+                    # Registramos el avance en el viaje de retorno
+                    historial_simulacion.append({
+                        "agent_pos": [paso[1], paso[0]],
+                        "weather_matrix": [list(fila) for fila in agente.mapa_clima]
+                    })
+                    
+                    if agente.bateria <= 0: 
+                        break
                     
                 if agente.posicion_agente in agente.bases:
                     agente.tiene_pasajero = False
@@ -101,13 +138,11 @@ async def solve(data: Mission):
             else:
                 personas_a_procesar.pop(0)
 
-    # 4. Traducción para la interfaz: Retornamos las coordenadas como [x, y] para la animación
-    ruta_frontend = [[paso[1], paso[0]] for paso in ruta_python]
-    
-    if len(ruta_frontend) <= 1:
-        return {"ruta": [], "error": "No se encontraron rutas accesibles para las metas actuales."}
+    # 4. Validación final del recorrido acumulado
+    if len(historial_simulacion) <= 1:
+        return {"steps": [], "status": "No se encontraron rutas accesibles para las metas actuales o el agente se quedó sin energía."}
 
-    return {"ruta": ruta_frontend, "error": None}
+    return {"steps": historial_simulacion, "status": f"Simulación calculada con éxito usando {algoritmo_elegido}"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

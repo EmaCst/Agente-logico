@@ -114,6 +114,7 @@ function App() {
     }
   };
 
+  // NUEVA FUNCIÓN: Sincronizada para renderizar los climas cambiantes paso a paso
   const enviarAlBackend = async () => {
     try {
       const res = await axios.post('http://localhost:8000/solve', {
@@ -122,18 +123,47 @@ function App() {
         algorithm: algorithm 
       });
 
-      if (res.data.ruta && res.data.ruta.length > 0) {
-        res.data.ruta.forEach((paso, i) => {
+      const { steps, status } = res.data;
+
+      // Si el backend usó la estructura 'steps' de forma exitosa
+      if (steps && steps.length > 0) {
+        steps.forEach((step, index) => {
           setTimeout(() => {
-            setAgentPos([paso[0], paso[1]]);
-            setTurns(i);
-          }, i * 400);
+            // 1. Actualizamos la posición del robot en la UI
+            setAgentPos(step.agent_pos);
+            
+            // 2. Avanzamos el contador visual de turnos
+            setTurns(index);
+
+            // 3. Mapeamos la matriz completa con el estado del clima del backend en este frame
+            setMatrix((prevMatrix) => {
+              return prevMatrix.map((row, y) => 
+                row.map((cell, x) => {
+                  const nuevoClimaBackend = step.weather_matrix[y][x];
+                  let nuevoId = cell.id;
+
+                  // Lógica visual: si el robot pisa una persona, quítala del mapa en el front
+                  if (step.agent_pos[0] === x && step.agent_pos[1] === y) {
+                    if (cell.id === 2) nuevoId = 0;
+                  }
+
+                  return {
+                    ...cell,
+                    weather: nuevoClimaBackend,
+                    id: nuevoId
+                  };
+                })
+              );
+            });
+          }, index * 450); // 450ms por paso para apreciar las alteraciones dinámicas del clima
         });
       } else {
-        alert(res.data.status || "No se encontró una ruta válida.");
+        // Fallback por si hay advertencias o faltan elementos en el mapa
+        alert(status || "No se encontró una ruta válida.");
       }
     } catch (err) {
-      alert("Error: Verifica que el servidor Python esté corriendo en el puerto 8000");
+      alert("Error: Verifica que el servidor Python esté corriendo en el puerto 8000 o revisa la consola.");
+      console.error(err);
     }
   };
 
@@ -170,21 +200,24 @@ function App() {
           </button>
         </aside>
 
-        {/* MAPA */}
+        {/* MAPA INTERACTIVO CON CLIMAS EN TIEMPO REAL */}
         <section className="bg-slate-900 p-2 rounded-xl border-4 border-slate-800 shadow-2xl overflow-auto">
           <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
             {matrix.map((row, y) => row.map((cell, x) => (
               <div key={`${x}-${y}`} onClick={() => handleCellClick(x, y)}
-                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center cursor-pointer border border-white/5 relative transition-all
+                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center cursor-pointer border border-white/5 relative transition-all duration-300
                   ${cell.id === 1 ? 'bg-slate-700' : 'bg-slate-900'}
-                  ${cell.weather === 'Lluvia' ? 'border-b-blue-500 border-b-2 bg-blue-950/20' : ''}
-                  ${cell.weather === 'Tormenta' ? 'border-b-purple-500 border-b-2 bg-purple-950/30' : ''}`}>
+                  ${cell.weather === 'Lluvia' ? 'border-b-blue-500 border-b-2 bg-blue-950/40' : ''}
+                  ${cell.weather === 'Tormenta' ? 'border-b-purple-500 border-b-2 bg-purple-950/50 shadow-inner' : ''}
+                  ${cell.weather === 'Despejado' ? 'border-b-transparent bg-slate-900' : ''}`}>
+                
                 {cell.id === 2 && <span>👤</span>}
                 {cell.id === 4 && <span>🔋</span>}
                 {cell.id === 5 && <span>⚡</span>}
                 {cell.id === 8 && <span>🏠</span>}
+                
                 {agentPos[0] === x && agentPos[1] === y && (
-                  <div className="absolute inset-1 flex items-center justify-center bg-blue-500 rounded z-10 animate-pulse text-xl">🤖</div>
+                  <div className="absolute inset-1 flex items-center justify-center bg-blue-500 rounded z-10 animate-pulse text-xl shadow-lg">🤖</div>
                 )}
               </div>
             )))}
@@ -206,8 +239,8 @@ function App() {
           </div>
 
           <div className="bg-slate-800/30 p-4 rounded-2xl border border-slate-700">
-             <p className="text-[10px] text-slate-400">TURNOS: {turns}</p>
-             <p className="text-[10px] text-slate-400 uppercase">PERSONAS EN MAPA: {matrix.flat().filter(c => c.id === 2).length}</p>
+             <p className="text-[10px] text-slate-400 font-mono">TURNOS: {turns}</p>
+             <p className="text-[10px] text-slate-400 uppercase font-mono">PERSONAS RESTANTES: {matrix.flat().filter(c => c.id === 2).length}</p>
           </div>
           <button onClick={enviarAlBackend} className="w-full py-4 bg-blue-600 rounded-2xl font-bold uppercase tracking-widest hover:bg-blue-500 transition-all shadow-lg text-sm">
             INICIAR RESCATE
