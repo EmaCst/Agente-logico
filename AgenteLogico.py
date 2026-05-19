@@ -4,7 +4,33 @@ import time
 import heapq
 import os
 from collections import deque
+from typing import List
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
+# --- CONFIGURACIÓN DE FASTAPI (PUENTE WEB) ---
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class Cell(BaseModel):
+    id: int
+    weather: str
+
+class MapData(BaseModel):
+    matrix: List[List[Cell]]
+    start_pos: List[int]
+    algorithm: str
+
+
+# --- TU CLASE ORIGINAL INTACTA ---
 class AgenteRescate:
     def __init__(self, filas=15, columnas=15):
         self.filas = filas
@@ -147,39 +173,84 @@ class AgenteRescate:
         if obj in [4, 5]: self.mapa_objetos[nf][nc] = 0
         return self.bateria > 0
 
-if __name__ == "__main__":
-    agente = AgenteRescate()
-    print("\n1. BFS | 2. A*")
-    opcion = input("Algoritmo: ")
-    nombre_alg = "BFS" if opcion == "1" else "A*"
 
-    while agente.personas_pendientes and agente.bateria > 0:
-        obj_p = agente.personas_pendientes[0]
-        ruta = agente.buscar_bfs(obj_p) if opcion == "1" else agente.buscar_a_estrella(obj_p)
-        
-        if ruta:
-            for paso in ruta[1:]:
-                if not agente.mover_agente(paso[0], paso[1]): break
-                agente.dibujar_consola(nombre_alg)
-                time.sleep(0.4)
+# --- ENDPOINT DE INTERCONEXIÓN PARA REACT ---
+@app.post("/solve")
+def solve_mission(data: MapData):
+    filas = len(data.matrix)
+    columnas = len(data.matrix[0])
+    
+    # Instanciamos el agente de tu clase original
+    agente = AgenteRescate(filas=filas, columnas=columnas)
+    
+    # Limpiamos las listas aleatorias por defecto para llenarlas con el mapa web
+    agente.personas_pendientes = []
+    # Convertimos la posición inicial [x, y] de React a [fila, columna] de tu lógica de Python
+    agente.posicion_agente = [data.start_pos[1], data.start_pos[0]]
+    agente.bases = []
+    
+    # Poblamos tu estructura con los datos exactos que vienen de React
+    for f in range(filas):
+        for c in range(columnas):
+            celda_web = data.matrix[f][c]
+            agente.mapa_objetos[f][c] = celda_web.id
+            agente.mapa_clima[f][c] = celda_web.weather
             
-            if agente.posicion_agente == obj_p:
-                agente.tiene_pasajero = True
-                agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0
+            if celda_web.id == 2:
+                agente.personas_pendientes.append([f, c])
+            elif celda_web.id == 8:
+                agente.bases.append([f, c])
                 
-                rutas_b = [agente.buscar_bfs(b) if opcion == "1" else agente.buscar_a_estrella(b) for b in agente.bases]
-                rutas_validas = [r for r in rutas_b if r]
-                if rutas_validas:
-                    ruta_base = min(rutas_validas, key=len)
-                    for paso in ruta_base[1:]:
-                        if not agente.mover_agente(paso[0], paso[1]): break
-                        agente.dibujar_consola(nombre_alg)
-                        time.sleep(0.4)
-                    if agente.posicion_agente in agente.bases:
-                        agente.tiene_pasajero = False
-                        agente.personas_pendientes.pop(0)
-        else:
-            print("No hay ruta. Reintentando...")
-            agente = AgenteRescate()
+    if not agente.personas_pendientes or not agente.bases:
+        return {"ruta": [], "status": "Faltan personas o bases en el mapa interactivo"}
 
-    print("\n--- SIMULACIÓN FINALIZADA ---")
+    ruta_python = [list(agente.posicion_agente)]
+    algoritmo_elegido = data.algorithm
+    personas_a_procesar = list(agente.personas_pendientes)
+
+    while personas_a_procesar and agente.bateria > 0:
+        obj_p = personas_a_procesar[0]
+        
+        if algoritmo_elegido == "BFS":
+            ruta_persona = agente.buscar_bfs(obj_p)
+        else:
+            ruta_persona = agente.buscar_a_estrella(obj_p)
+            
+        if not ... or not ruta_persona:
+            personas_a_procesar.pop(0)
+            continue
+            
+        for paso in ruta_persona[1:]:
+            ruta_python.append(list(paso))
+            agente.mover_agente(paso[0], paso[1])
+            
+        if agente.posicion_agente == obj_p:
+            agente.tiene_pasajero = True
+            agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0
+            
+            # Buscamos rutas a las bases usando tu misma lógica
+            rutas_b = [agente.buscar_bfs(b) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(b) for b in agente.bases]
+            rutas_validas = [r for r in rutas_b if r]
+            
+            if rutas_validas:
+                ruta_base = min(rutas_validas, key=len)
+                for paso in ruta_base[1:]:
+                    ruta_python.append(list(paso))
+                    agente.mover_agente(paso[0], paso[1])
+                    
+                if agente.posicion_agente in agente.bases:
+                    agente.tiene_pasajero = False
+                    personas_a_procesar.pop(0)
+            else:
+                personas_a_procesar.pop(0)
+
+    # Traducimos de vuelta los pasos [fila, columna] a [x, y] para que React los pinte correctamente
+    ruta_frontend = [[paso[1], paso[0]] for paso in ruta_python]
+    return {"ruta": ruta_frontend, "status": f"Ruta calculada con {algoritmo_elegido}"}
+
+
+# --- CONTROL DE EJECUCIÓN ---
+if __name__ == "__main__":
+    import uvicorn
+    # Cambiamos temporalmente para arrancar la interfaz web en localhost
+    uvicorn.run(app, host="127.0.0.1", port=8000)
