@@ -6,7 +6,7 @@ import os
 from collections import deque
 
 class AgenteRescate:
-    def __init__(self, filas=10, columnas=10):
+    def __init__(self, filas=15, columnas=15):
         self.filas = filas
         self.columnas = columnas
         self.bateria = 100
