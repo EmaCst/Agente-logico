@@ -43,11 +43,11 @@ class AgenteRescate:
         self.bases = []
         self.tiene_pasajero = False
         
-        # REGLA NUEVA: Contador global de turnos internos del agente
+        # REGLA: Contador global de turnos internos del agente
         self.turnos_globales = 0 
         
-        self.colocar_objetos()
-        self.actualizar_clima_mapa()
+        # NOTA: Desactivamos la generación aleatoria por defecto en el constructor 
+        # para heredar estrictamente el escenario diseñado o congelado en el Frontend.
 
     def colocar_objetos(self):
         while len(self.bases) < 2:
@@ -78,12 +78,18 @@ class AgenteRescate:
                     elif prob < 0.20: self.mapa_objetos[f][c] = 4
 
     def actualizar_clima_mapa(self):
-        # El clima muta de forma masiva en todo el mapa
+        # MODIFICACIÓN CIENTÍFICA: Forzamos una semilla basada en el turno.
+        # Esto garantiza que el clima mute de forma IDÉNTICA para BFS y A* en el mismo turno.
+        random.seed(self.turnos_globales)
+        
         opciones = ["Despejado", "Lluvia", "Tormenta"]
         pesos = [70, 20, 10]
         for f in range(self.filas):
             for c in range(self.columnas):
                 self.mapa_clima[f][c] = random.choices(opciones, weights=pesos, k=1)[0]
+        
+        # Restauramos el estado del generador aleatorio para no congelar otros procesos externos
+        random.seed(None)
 
     def dibujar_consola(self, algoritmo):
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -158,10 +164,9 @@ class AgenteRescate:
         self.bateria -= costo
         self.posicion_agente = [nf, nc]
         
-        # MODIFICACIÓN CLAVE: Sumamos un turno por cada movimiento individual
         self.turnos_globales += 1
         
-        # REGLA DE LOS 5 TURNOS: El clima cambia estrictamente si es múltiplo de 5
+        # REGLA DE LOS 5 TURNOS
         if self.turnos_globales % 5 == 0:
             self.actualizar_clima_mapa()
         
@@ -183,7 +188,7 @@ def solve_mission(data: MapData):
     agente.posicion_agente = [data.start_pos[1], data.start_pos[0]]
     agente.bases = []
     
-    # Cargamos el mapa inicial provisto por el Front
+    # Cargamos el mapa inicial provisto por el Front de forma exacta
     for f in range(filas):
         for c in range(columnas):
             celda_web = data.matrix[f][c]
@@ -202,11 +207,9 @@ def solve_mission(data: MapData):
     algoritmo_elegido = data.algorithm
     personas_a_procesar = list(agente.personas_pendientes)
 
-    # RECALCULACIÓN DINÁMICA PASO A PASO:
     while personas_a_procesar and agente.bateria > 0:
         obj_p = personas_a_procesar[0]
         
-        # Decidimos el objetivo lógico basándonos en si tiene pasajero o no
         if agente.tiene_pasajero:
             rutas_b = [agente.buscar_bfs(b) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(b) for b in agente.bases]
             rutas_validas = [r for r in rutas_b if r]
@@ -218,26 +221,22 @@ def solve_mission(data: MapData):
             personas_a_procesar.pop(0)
             continue
 
-        # Calculamos la ruta con las condiciones del mapa en este instante preciso
         if algoritmo_elegido == "BFS":
             ruta_calculada = agente.buscar_bfs(meta_actual)
         else:
             ruta_calculada = agente.buscar_a_estrella(meta_actual)
 
-        # Si no hay camino viable o ya se encuentra sobre el objetivo
         if not ruta_calculada or len(ruta_calculada) <= 1:
             if agente.tiene_pasajero and agente.posicion_agente in agente.bases:
                 agente.tiene_pasajero = False
-                personas_a_procesar.pop(0) # Ciudadano salvado
+                personas_a_procesar.pop(0) 
             elif not agente.tiene_pasajero and agente.posicion_agente == obj_p:
                 agente.tiene_pasajero = True
-                agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 # Subió al vehículo
+                agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 
             else:
-                personas_a_procesar.pop(0) # Inalcanzable
+                personas_a_procesar.pop(0) 
             continue
 
-        # ¡AQUÍ ESTÁ EL CAMBIO DINÁMICO!: Avanza SOLO UN PASO. 
-        # Al regresar al 'while', volverá a calcular usando las condiciones climáticas del siguiente turno.
         siguiente_paso = ruta_calculada[1]
         ruta_python.append(list(siguiente_paso))
         agente.mover_agente(siguiente_paso[0], siguiente_paso[1])
@@ -246,7 +245,6 @@ def solve_mission(data: MapData):
     return {"ruta": ruta_frontend, "status": f"Ruta calculada con {algoritmo_elegido}"}
 
 
-# --- CONTROL DE EJECUCIÓN ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

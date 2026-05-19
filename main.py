@@ -1,10 +1,11 @@
+# main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 import uvicorn
 
-# Importamos tu clase original intacta desde tu otro archivo
+# Importamos tu clase lógica desde el archivo hermano
 from AgenteLogico import AgenteRescate 
 
 app = FastAPI()
@@ -12,6 +13,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -31,15 +33,18 @@ async def solve(data: Mission):
     filas = len(data.matrix)
     columnas = len(data.matrix[0])
     
+    # Inicializamos el agente con las dimensiones solicitadas
     agente = AgenteRescate(filas=filas, columnas=columnas)
     agente.personas_pendientes = []
     agente.bases = []
     
-    # Lista para registrar dónde colocó el usuario las baterías en el Front
+    # Lista local para registrar dónde colocó el usuario las baterías en el Front
     baterias_disponibles = []
     
+    # Mapeo de la posición inicial del agente de la interfaz [X, Y] a la matriz [Fila, Columna]
     agente.posicion_agente = [data.start_pos[1], data.start_pos[0]] 
 
+    # Inyección exacta del escenario congelado del Frontend al Backend
     for y in range(filas):
         for x in range(columnas):
             celda_web = data.matrix[y][x]
@@ -55,7 +60,7 @@ async def solve(data: Mission):
                 agente.mapa_objetos[y][x] = 1 
             elif celda_web.id in [4, 5]:
                 agente.mapa_objetos[y][x] = 0 
-                # Guardamos el tipo de batería (4 o 5) y su posición [fila, columna]
+                # Registramos el consumible en el radar del planificador de energía
                 baterias_disponibles.append({"pos": [y, x], "tipo": celda_web.id})
             else:
                 agente.mapa_objetos[y][x] = 0
@@ -68,7 +73,7 @@ async def solve(data: Mission):
 
     historial_simulacion = []
 
-    # Frame inicial Estado 0
+    # Frame inicial (Turno 0) que congela las condiciones con las que inicia el mapa
     historial_simulacion.append({
         "agent_pos": [agente.posicion_agente[1], agente.posicion_agente[0]],
         "weather_matrix": [list(fila) for fila in agente.mapa_clima],
@@ -91,7 +96,7 @@ async def solve(data: Mission):
             bateria_cercana = min(baterias_disponibles, key=distancia)
             pos_bat = bateria_cercana["pos"]
             
-            # Buscamos la ruta hacia la BATERÍA en base al clima actual
+            # Buscamos la ruta hacia la BATERÍA en base al clima dinámico actual
             ruta_bat = agente.buscar_bfs(pos_bat) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(pos_bat)
             
             if ruta_bat and len(ruta_bat) > 1:
@@ -109,43 +114,42 @@ async def solve(data: Mission):
                     "weather_matrix": [list(fila) for fila in agente.mapa_clima],
                     "bateria": max(0, agente.bateria)
                 })
-                continue # Forzamos reinicio del ciclo general para recalcular con nueva energía
+                continue # Forzamos reinicio del ciclo general para evaluar con el nuevo estado de energía
 
         # 2. DEFINIR LA RUTA SEGÚN EL OBJETIVO ACTUAL (Hacia Persona o Base)
         obj_p = personas_a_procesar[0]
         
         if agente.tiene_pasajero:
-            # Buscamos rutas viables hacia las bases disponibles
             rutas_b = [agente.buscar_bfs(b) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(b) for b in agente.bases]
             rutas_validas = [r for r in rutas_b if r]
             ruta_actual = min(rutas_validas, key=len) if rutas_validas else None
         else:
             ruta_actual = agente.buscar_bfs(obj_p) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(obj_p)
 
-        # Evaluar si se llegó al destino u obstrucción 
+        # Evaluar si se llegó al destino, si está obstruido o si se debe cambiar de estado
         if not ruta_actual or len(ruta_actual) <= 1:
             if agente.tiene_pasajero and agente.posicion_agente in agente.bases:
                 agente.tiene_pasajero = False
-                personas_a_procesar.pop(0) # Ciudadano entregado a salvo
+                personas_a_procesar.pop(0) # Ciudadano entregado a salvo en zona segura
             elif not agente.tiene_pasajero and agente.posicion_agente == obj_p:
                 agente.tiene_pasajero = True
-                agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 # Pasajero sube a bordo
+                agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 # Pasajero aborda el vehículo de rescate
             else:
-                personas_a_procesar.pop(0) # Inalcanzable
+                personas_a_procesar.pop(0) # Inalcanzable por clima o muros, se descarta
             continue
 
-        # 3. AVANZAR UN ÚNICO PASO (Detección de Cambios en Vivo)
+        # 3. AVANZAR UN ÚNICO PASO (Detección de Cambios Meteorológicos en Vivo)
         siguiente_paso = ruta_actual[1]
         agente.mover_agente(siguiente_paso[0], siguiente_paso[1]) 
         
-        # Control de recarga casual en el camino
+        # Control de recarga casual en el camino (por si pisa una batería sin estar en modo crítico)
         for b in list(baterias_disponibles):
             if agente.posicion_agente == b["pos"]:
                 if b["tipo"] == 5: agente.bateria = 100
                 elif b["tipo"] == 4: agente.bateria = min(100, agente.bateria + 40)
                 baterias_disponibles.remove(b)
 
-        # Capturamos el frame con el estado dinámico del mapa procesado por el Agente
+        # Capturamos el frame exacto del entorno modificado tras dar este paso
         historial_simulacion.append({
             "agent_pos": [siguiente_paso[1], siguiente_paso[0]], 
             "weather_matrix": [list(fila) for fila in agente.mapa_clima],

@@ -4,12 +4,14 @@ import axios from 'axios';
 function App() {
   const size = 15;
   const [matrix, setMatrix] = useState([]);
+  const [backupMatrix, setBackupMatrix] = useState([]); // <--- NUEVO: Para guardar el mapa original antes de la simulación
   const [selectedTool, setSelectedTool] = useState(1);
   const [selectedWeather, setSelectedWeather] = useState('Despejado');
   const [agentPos, setAgentPos] = useState([0, 0]);
+  const [initialAgentPos, setInitialAgentPos] = useState([0, 0]); // <--- NUEVO: Guarda la posición inicial elegida por el usuario
   const [turns, setTurns] = useState(0);
   const [battery, setBattery] = useState(100);
-  const [energyConsumed, setEnergyConsumed] = useState(0); // <--- NUEVO: Estado para rastrear el gasto total
+  const [energyConsumed, setEnergyConsumed] = useState(0); 
   const [algorithm, setAlgorithm] = useState('A*');
 
   const tools = [
@@ -34,8 +36,9 @@ function App() {
     };
 
     setAgentPos([0, 0]);
+    setInitialAgentPos([0, 0]); // Sincroniza posición inicial backup
     setBattery(100); 
-    setEnergyConsumed(0); // Reseteamos el consumo al regenerar el mapa
+    setEnergyConsumed(0); 
 
     let basesPuestas = 0;
     while (basesPuestas < 2) {
@@ -91,6 +94,7 @@ function App() {
     }
 
     setMatrix(nuevoMapa);
+    setBackupMatrix(JSON.parse(JSON.stringify(nuevoMapa))); // Guardamos copia pura del escenario inicial
     setTurns(0);
   };
 
@@ -101,29 +105,38 @@ function App() {
   const handleCellClick = (x, y) => {
     if (selectedTool === 7) {
       setAgentPos([x, y]);
+      setInitialAgentPos([x, y]); // Si el usuario mueve el origen manualmente, lo guardamos en el backup
     } else {
       const newMatrix = [...matrix];
       newMatrix[y][x] = { id: selectedTool, weather: selectedWeather };
       setMatrix(newMatrix);
+      setBackupMatrix(JSON.parse(JSON.stringify(newMatrix))); // Actualiza el backup con la edición manual del usuario
     }
+  };
+
+  // <--- NUEVO: Función para limpiar simulación actual y regresar al estado del escenario inicial
+  const restaurarEscenarioOriginal = () => {
+    setMatrix(JSON.parse(JSON.stringify(backupMatrix))); 
+    setAgentPos([...initialAgentPos]);
+    setBattery(100);
+    setTurns(0);
+    setEnergyConsumed(0);
   };
 
   const enviarAlBackend = async () => {
     try {
-      // Reseteamos contadores antes de iniciar una nueva animación
       setTurns(0);
       setEnergyConsumed(0);
 
-      const res = await axios.post('http://localhost:8000/solve', {
-        matrix: matrix,
-        start_pos: agentPos,
-        algorithm: algorithm 
-      });
+      const res = await axios.post('http://127.0.0.1:8000/solve', {
+  matrix: matrix,
+  start_pos: agentPos,
+  algorithm: algorithm 
+});
 
       const { steps, status } = res.data;
 
       if (steps && steps.length > 0) {
-        // Variable local auxiliar para ir acumulando el gasto en tiempo real dentro del ciclo
         let acumuladorEnergia = 0;
 
         steps.forEach((step, index) => {
@@ -132,17 +145,12 @@ function App() {
             setTurns(index);
             setBattery(step.bateria);
 
-            // CÁLCULO DE ENERGÍA CONSUMIDA:
-            // Comparamos el paso actual con el anterior para ver cuánta batería se gastó
             if (index > 0) {
               const bateriaAnterior = steps[index - 1].bateria;
               const bateriaActual = step.bateria;
               
-              // Si la batería disminuyó, calculamos la diferencia exacta gastada por el clima
               if (bateriaActual < bateriaAnterior) {
                 acumuladorEnergia += (bateriaAnterior - bateriaActual);
-              } else {
-               acumuladorEnergia += 1; 
               }
               setEnergyConsumed(acumuladorEnergia);
             }
@@ -213,6 +221,10 @@ function App() {
           <button onClick={generarMapaAleatorio} className="w-full py-2 bg-slate-700 hover:bg-slate-600 rounded-xl font-bold text-xs uppercase border border-slate-600 transition-all">
             🔄 Regenerar Mapa
           </button>
+          {/* NUEVO BOTÓN DE RESTAURACIÓN INTEGRADO EN TU ASIDE */}
+          <button onClick={restaurarEscenarioOriginal} className="w-full py-2 bg-amber-700/60 hover:bg-amber-600 rounded-xl font-bold text-xs uppercase border border-amber-600 transition-all">
+            ⏪ Restaurar Escenario
+          </button>
         </aside>
 
         {/* MAPA INTERACTIVO */}
@@ -268,7 +280,6 @@ function App() {
                </div>
              </div>
 
-             {/* SECCIÓN ACTUALIZADA DE MÉTRICAS */}
              <div className="pt-2 border-t border-slate-700/50 space-y-1">
                <p className="text-[10px] text-slate-400 font-mono flex justify-between">
                  <span>TURNOS EN RUTA:</span> 
