@@ -8,14 +8,15 @@ function App() {
   const [selectedWeather, setSelectedWeather] = useState('Despejado');
   const [agentPos, setAgentPos] = useState([0, 0]);
   const [turns, setTurns] = useState(0);
-  const [battery, setBattery] = useState(100); // <--- NUEVO ESTADO PARA LA BATERÍA
+  const [battery, setBattery] = useState(100);
+  const [energyConsumed, setEnergyConsumed] = useState(0); // <--- NUEVO: Estado para rastrear el gasto total
   const [algorithm, setAlgorithm] = useState('A*');
 
   const tools = [
-    { id: 1, name: 'Muro', icon: '⬛' },
+    { id: 1, name: 'Muro', icon: '🧱' },
     { id: 2, name: 'Persona', icon: '👤' },
-    { id: 4, name: 'Bat. 40%', icon: '🔋' },
-    { id: 5, name: 'Bat. 100%', icon: '⚡' },
+    { id: 4, name: 'Bat. 40%', icon: '🪫' },
+    { id: 5, name: 'Bat. 100%', icon: '🔋' },
     { id: 8, name: 'Zona Segura', icon: '🏠' },
     { id: 7, name: 'Robot (Inicio)', icon: '🤖' },
     { id: 0, name: 'Borrador', icon: '🗑️' },
@@ -33,7 +34,8 @@ function App() {
     };
 
     setAgentPos([0, 0]);
-    setBattery(100); // Reseteamos la batería visual al regenerar
+    setBattery(100); 
+    setEnergyConsumed(0); // Reseteamos el consumo al regenerar el mapa
 
     let basesPuestas = 0;
     while (basesPuestas < 2) {
@@ -108,6 +110,10 @@ function App() {
 
   const enviarAlBackend = async () => {
     try {
+      // Reseteamos contadores antes de iniciar una nueva animación
+      setTurns(0);
+      setEnergyConsumed(0);
+
       const res = await axios.post('http://localhost:8000/solve', {
         matrix: matrix,
         start_pos: agentPos,
@@ -117,11 +123,29 @@ function App() {
       const { steps, status } = res.data;
 
       if (steps && steps.length > 0) {
+        // Variable local auxiliar para ir acumulando el gasto en tiempo real dentro del ciclo
+        let acumuladorEnergia = 0;
+
         steps.forEach((step, index) => {
           setTimeout(() => {
             setAgentPos(step.agent_pos);
             setTurns(index);
-            setBattery(step.bateria); // <--- ACTUALIZAMOS EL ESTADO DE LA BATERÍA PASO A PASO
+            setBattery(step.bateria);
+
+            // CÁLCULO DE ENERGÍA CONSUMIDA:
+            // Comparamos el paso actual con el anterior para ver cuánta batería se gastó
+            if (index > 0) {
+              const bateriaAnterior = steps[index - 1].bateria;
+              const bateriaActual = step.bateria;
+              
+              // Si la batería disminuyó, calculamos la diferencia exacta gastada por el clima
+              if (bateriaActual < bateriaAnterior) {
+                acumuladorEnergia += (bateriaAnterior - bateriaActual);
+              } else {
+               acumuladorEnergia += 1; 
+              }
+              setEnergyConsumed(acumuladorEnergia);
+            }
 
             setMatrix((prevMatrix) => {
               return prevMatrix.map((row, y) => 
@@ -131,7 +155,6 @@ function App() {
 
                   if (step.agent_pos[0] === x && step.agent_pos[1] === y) {
                     if (cell.id === 2) nuevoId = 0;
-                    // Opcional: si pisa una batería (4 o 5) también la podemos limpiar visualmente
                     if (cell.id === 4 || cell.id === 5) nuevoId = 0;
                   }
 
@@ -153,7 +176,6 @@ function App() {
     }
   };
 
-  // Función auxiliar para cambiar el color de la barra según el porcentaje
   const getBatteryColor = (value) => {
     if (value > 50) return 'bg-emerald-500';
     if (value > 20) return 'bg-amber-500';
@@ -205,8 +227,8 @@ function App() {
                   ${cell.weather === 'Despejado' ? 'border-b-transparent bg-slate-900' : ''}`}>
                 
                 {cell.id === 2 && <span>👤</span>}
-                {cell.id === 4 && <span>🔋</span>}
-                {cell.id === 5 && <span>⚡</span>}
+                {cell.id === 4 && <span>🪫</span>}
+                {cell.id === 5 && <span>🔋</span>}
                 {cell.id === 8 && <span>🏠</span>}
                 
                 {agentPos[0] === x && agentPos[1] === y && (
@@ -231,12 +253,11 @@ function App() {
             </div>
           </div>
 
-          {/* INDICADORES EN TIEMPO REAL ACTUALIZADOS */}
+          {/* INDICADORES EN TIEMPO REAL */}
           <div className="bg-slate-800/30 p-4 rounded-2xl border border-slate-700 space-y-3">
-             {/* NUEVO: BARRA DE ENERGÍA DE BATERÍA */}
              <div>
                <div className="flex justify-between items-center mb-1">
-                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Energía del Robot</p>
+                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Energía Actual</p>
                  <span className={`text-xs font-mono font-bold ${battery <= 20 ? 'text-rose-400' : 'text-cyan-400'}`}>{battery}%</span>
                </div>
                <div className="w-full h-3 bg-slate-950 rounded-full overflow-hidden border border-slate-700">
@@ -247,9 +268,20 @@ function App() {
                </div>
              </div>
 
+             {/* SECCIÓN ACTUALIZADA DE MÉTRICAS */}
              <div className="pt-2 border-t border-slate-700/50 space-y-1">
-               <p className="text-[10px] text-slate-400 font-mono">TURNOS: {turns}</p>
-               <p className="text-[10px] text-slate-400 uppercase font-mono">PERSONAS RESTANTES: {matrix.flat().filter(c => c.id === 2).length}</p>
+               <p className="text-[10px] text-slate-400 font-mono flex justify-between">
+                 <span>TURNOS EN RUTA:</span> 
+                 <span className="font-bold text-white">{turns}</span>
+               </p>
+               <p className="text-[10px] text-amber-400 font-mono flex justify-between">
+                 <span>ENERGÍA CONSUMIDA:</span> 
+                 <span className="font-bold">{energyConsumed} unidades</span>
+               </p>
+               <p className="text-[10px] text-slate-400 uppercase font-mono flex justify-between pt-1">
+                 <span>PERSONAS RESTANTES:</span>
+                 <span className="font-bold text-white">{matrix.flat().filter(c => c.id === 2).length}</span>
+               </p>
              </div>
           </div>
           

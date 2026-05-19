@@ -35,7 +35,7 @@ async def solve(data: Mission):
     agente.personas_pendientes = []
     agente.bases = []
     
-    # NUEVO: Lista para registrar dónde colocó el usuario las baterías en el Front
+    # Lista para registrar dónde colocó el usuario las baterías en el Front
     baterias_disponibles = []
     
     agente.posicion_agente = [data.start_pos[1], data.start_pos[0]] 
@@ -55,7 +55,7 @@ async def solve(data: Mission):
                 agente.mapa_objetos[y][x] = 1 
             elif celda_web.id in [4, 5]:
                 agente.mapa_objetos[y][x] = 0 
-                # NUEVO: Guardamos el tipo de batería (4 o 5) y su posición [fila, columna]
+                # Guardamos el tipo de batería (4 o 5) y su posición [fila, columna]
                 baterias_disponibles.append({"pos": [y, x], "tipo": celda_web.id})
             else:
                 agente.mapa_objetos[y][x] = 0
@@ -68,6 +68,7 @@ async def solve(data: Mission):
 
     historial_simulacion = []
 
+    # Frame inicial Estado 0
     historial_simulacion.append({
         "agent_pos": [agente.posicion_agente[1], agente.posicion_agente[0]],
         "weather_matrix": [list(fila) for fila in agente.mapa_clima],
@@ -77,105 +78,79 @@ async def solve(data: Mission):
     personas_a_procesar = list(agente.personas_pendientes)
     algoritmo_elegido = data.algorithm
 
-    # Bucle principal de la simulación
+    # =========================================================================
+    # BUCLE PRINCIPAL CON RECALCULACIÓN PASO A PASO (SIN CICLOS FOR CIEGOS)
+    # =========================================================================
     while personas_a_procesar and agente.bateria > 0:
         
-        # =========================================================================
-        # NUEVA LÓGICA DE DETECCIÓN CRÍTICA DE BATERÍA
-        # =========================================================================
-        # Si la batería baja de 40 y quedan consumibles en el mapa, recalculamos prioridad
+        # 1. EVALUAR PRIORIDAD CRÍTICA DE BATERÍA (Batería <= 40)
         if agente.bateria <= 40 and baterias_disponibles:
-            # Encontramos la batería numéricamente más cercana usando distancia Manhattan
             def distancia(b):
                 return abs(agente.posicion_agente[0] - b["pos"][0]) + abs(agente.posicion_agente[1] - b["pos"][1])
             
             bateria_cercana = min(baterias_disponibles, key=distancia)
             pos_bat = bateria_cercana["pos"]
             
-            # Buscamos la ruta hacia la BATERÍA en lugar de la persona
+            # Buscamos la ruta hacia la BATERÍA en base al clima actual
             ruta_bat = agente.buscar_bfs(pos_bat) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(pos_bat)
             
-            if ruta_bat:
-                # El agente camina hacia la batería
-                for paso in ruta_bat[1:]:
-                    agente.mover_agente(paso[0], paso[1])
-                    
-                    # Verificación si tu AgenteLogico no sube la batería automáticamente al pisarla:
-                    if agente.posicion_agente == pos_bat:
-                        # Forzamos la recarga en la simulación según el tipo
-                        if bateria_cercana["tipo"] == 5:
-                            agente.bateria = 100
-                        elif bateria_cercana["tipo"] == 4:
-                            agente.bateria = min(100, agente.bateria + 40)
-                    
-                    historial_simulacion.append({
-                        "agent_pos": [paso[1], paso[0]], 
-                        "weather_matrix": [list(fila) for fila in agente.mapa_clima],
-                        "bateria": agente.bateria
-                    })
-                    if agente.bateria <= 0: break
+            if ruta_bat and len(ruta_bat) > 1:
+                # AVANZAMOS UN SOLO PASO HACIA LA BATERÍA
+                paso = ruta_bat[1]
+                agente.mover_agente(paso[0], paso[1])
                 
-                # Una vez consumida, la removemos de las existencias del mapa
-                baterias_disponibles.remove(bateria_cercana)
-                continue # Regresa al inicio del while para reevaluar la ruta a la persona con nueva energía
-        # =========================================================================
+                if agente.posicion_agente == pos_bat:
+                    if bateria_cercana["tipo"] == 5: agente.bateria = 100
+                    elif bateria_cercana["tipo"] == 4: agente.bateria = min(100, agente.bateria + 40)
+                    baterias_disponibles.remove(bateria_cercana)
+                
+                historial_simulacion.append({
+                    "agent_pos": [paso[1], paso[0]], 
+                    "weather_matrix": [list(fila) for fila in agente.mapa_clima],
+                    "bateria": max(0, agente.bateria)
+                })
+                continue # Forzamos reinicio del ciclo general para recalcular con nueva energía
 
-        # Si tiene buena batería, sigue con su plan original de rescate
+        # 2. DEFINIR LA RUTA SEGÚN EL OBJETIVO ACTUAL (Hacia Persona o Base)
         obj_p = personas_a_procesar[0]
-        ruta_persona = agente.buscar_bfs(obj_p) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(obj_p)
-            
-        if not ruta_persona:
-            personas_a_procesar.pop(0)
-            continue
-            
-        for paso in ruta_persona[1:]:
-            agente.mover_agente(paso[0], paso[1]) 
-            
-            # Control de recarga casual (por si pisa una batería de camino a la persona sin estar en modo crítico)
-            for b in list(baterias_disponibles):
-                if agente.posicion_agente == b["pos"]:
-                    if b["tipo"] == 5: agente.bateria = 100
-                    elif b["tipo"] == 4: agente.bateria = min(100, agente.bateria + 40)
-                    baterias_disponibles.remove(b)
-
-            historial_simulacion.append({
-                "agent_pos": [paso[1], paso[0]], 
-                "weather_matrix": [list(fila) for fila in agente.mapa_clima],
-                "bateria": max(0, agente.bateria)
-            })
-            if agente.bateria <= 0: break
-            
-        if agente.posicion_agente == obj_p and agente.bateria > 0:
-            agente.tiene_pasajero = True
-            agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0
-            
+        
+        if agente.tiene_pasajero:
+            # Buscamos rutas viables hacia las bases disponibles
             rutas_b = [agente.buscar_bfs(b) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(b) for b in agente.bases]
             rutas_validas = [r for r in rutas_b if r]
-            
-            if rutas_validas:
-                ruta_base = min(rutas_validas, key=len)
-                for paso in ruta_base[1:]:
-                    agente.mover_agente(paso[0], paso[1]) 
-                    
-                    # Control de recarga casual en el viaje de regreso
-                    for b in list(baterias_disponibles):
-                        if agente.posicion_agente == b["pos"]:
-                            if b["tipo"] == 5: agente.bateria = 100
-                            elif b["tipo"] == 4: agente.bateria = min(100, agente.bateria + 40)
-                            baterias_disponibles.remove(b)
+            ruta_actual = min(rutas_validas, key=len) if rutas_validas else None
+        else:
+            ruta_actual = agente.buscar_bfs(obj_p) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(obj_p)
 
-                    historial_simulacion.append({
-                        "agent_pos": [paso[1], paso[0]],
-                        "weather_matrix": [list(fila) for fila in agente.mapa_clima],
-                        "bateria": max(0, agente.bateria)
-                    })
-                    if agente.bateria <= 0: break
-                    
-                if agente.posicion_agente in agente.bases:
-                    agente.tiene_pasajero = False
-                    personas_a_procesar.pop(0)
+        # Evaluar si se llegó al destino u obstrucción 
+        if not ruta_actual or len(ruta_actual) <= 1:
+            if agente.tiene_pasajero and agente.posicion_agente in agente.bases:
+                agente.tiene_pasajero = False
+                personas_a_procesar.pop(0) # Ciudadano entregado a salvo
+            elif not agente.tiene_pasajero and agente.posicion_agente == obj_p:
+                agente.tiene_pasajero = True
+                agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 # Pasajero sube a bordo
             else:
-                personas_a_procesar.pop(0)
+                personas_a_procesar.pop(0) # Inalcanzable
+            continue
+
+        # 3. AVANZAR UN ÚNICO PASO (Detección de Cambios en Vivo)
+        siguiente_paso = ruta_actual[1]
+        agente.mover_agente(siguiente_paso[0], siguiente_paso[1]) 
+        
+        # Control de recarga casual en el camino
+        for b in list(baterias_disponibles):
+            if agente.posicion_agente == b["pos"]:
+                if b["tipo"] == 5: agente.bateria = 100
+                elif b["tipo"] == 4: agente.bateria = min(100, agente.bateria + 40)
+                baterias_disponibles.remove(b)
+
+        # Capturamos el frame con el estado dinámico del mapa procesado por el Agente
+        historial_simulacion.append({
+            "agent_pos": [siguiente_paso[1], siguiente_paso[0]], 
+            "weather_matrix": [list(fila) for fila in agente.mapa_clima],
+            "bateria": max(0, agente.bateria)
+        })
 
     if len(historial_simulacion) <= 1:
         return {"steps": [], "status": "No se encontraron rutas accesibles o el agente se quedó sin energía."}

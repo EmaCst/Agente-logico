@@ -30,31 +30,31 @@ class MapData(BaseModel):
     algorithm: str
 
 
-# --- TU CLASE ORIGINAL INTACTA ---
+# --- TU CLASE ORIGINAL CON LAS NUEVAS REGLAS DE NEGOCIO ---
 class AgenteRescate:
     def __init__(self, filas=15, columnas=15):
         self.filas = filas
         self.columnas = columnas
         self.bateria = 100
         self.posicion_agente = [0, 0]
-        # El mapa ahora guarda OBJETOS (0: libre, 1: obstáculo, 2: persona, etc.)
         self.mapa_objetos = [[0 for _ in range(columnas)] for _ in range(filas)]
-        # El mapa_clima guarda el CLIMA de cada celda individualmente
         self.mapa_clima = [["Despejado" for _ in range(columnas)] for _ in range(filas)]
         self.personas_pendientes = []
         self.bases = []
         self.tiene_pasajero = False
+        
+        # REGLA NUEVA: Contador global de turnos internos del agente
+        self.turnos_globales = 0 
+        
         self.colocar_objetos()
-        self.actualizar_clima_mapa() # Inicializamos el clima
+        self.actualizar_clima_mapa()
 
     def colocar_objetos(self):
-        # 1. Bases aleatorias
         while len(self.bases) < 2:
             f, c = random.randint(0, self.filas - 1), random.randint(0, self.columnas - 1)
             if [f, c] != [0, 0] and [f, c] not in self.bases:
                 self.bases.append([f, c])
 
-        # 2. Obstáculos
         puestos = 0
         while puestos < 10:
             f, c = random.randint(0, self.filas - 1), random.randint(0, self.columnas - 1)
@@ -62,7 +62,6 @@ class AgenteRescate:
                 self.mapa_objetos[f][c] = 1
                 puestos += 1
 
-        # 3. Personas
         puestas = 0
         while puestas < 2:
             f, c = random.randint(0, self.filas - 1), random.randint(0, self.columnas - 1)
@@ -71,7 +70,6 @@ class AgenteRescate:
                 self.personas_pendientes.append([f, c])
                 puestas += 1
         
-        # 4. Baterías
         for f in range(self.filas):
             for c in range(self.columnas):
                 if self.mapa_objetos[f][c] == 0 and [f, c] not in self.bases and [f, c] != [0, 0]:
@@ -80,9 +78,9 @@ class AgenteRescate:
                     elif prob < 0.20: self.mapa_objetos[f][c] = 4
 
     def actualizar_clima_mapa(self):
-        # Cada celda decide su clima de forma independiente
+        # El clima muta de forma masiva en todo el mapa
         opciones = ["Despejado", "Lluvia", "Tormenta"]
-        pesos = [70, 20, 10] # Más probable que esté despejado por celda
+        pesos = [70, 20, 10]
         for f in range(self.filas):
             for c in range(self.columnas):
                 self.mapa_clima[f][c] = random.choices(opciones, weights=pesos, k=1)[0]
@@ -91,19 +89,17 @@ class AgenteRescate:
         os.system('cls' if os.name == 'nt' else 'clear')
         clima_local = self.mapa_clima[self.posicion_agente[0]][self.posicion_agente[1]]
         
-        print(f"\n--- MONITOR UMG | Algoritmo: {algoritmo} ---")
+        print(f"\n--- MONITOR UMG | Algoritmo: {algoritmo} | Turno General: {self.turnos_globales} ---")
         print(f"Batería: {self.bateria}% | Clima Local: {clima_local}")
         print("-" * (self.columnas * 3))
         
         for f in range(self.filas):
             fila_txt = ""
             for c in range(self.columnas):
-                # Determinar símbolo de fondo según clima de ESA celda
                 if self.mapa_clima[f][c] == "Despejado": char = "."
                 elif self.mapa_clima[f][c] == "Lluvia": char = "~"
                 else: char = "Z"
 
-                # Superponer objetos
                 if [f, c] == self.posicion_agente: fila_txt += " A "
                 elif [f, c] in self.bases: fila_txt += " S "
                 elif self.mapa_objetos[f][c] == 1: fila_txt += " # "
@@ -130,7 +126,6 @@ class AgenteRescate:
             for df, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nf, nc = f + df, c + dc
                 if 0 <= nf < self.filas and 0 <= nc < self.columnas and self.mapa_objetos[nf][nc] != 1:
-                    # AQUÍ ESTÁ LA MAGIA: El costo depende del clima de la celda vecina (nf, nc)
                     clima_celda = self.mapa_clima[nf][nc]
                     costo_paso = costos_clima[clima_celda] + penalizacion
                     
@@ -154,7 +149,6 @@ class AgenteRescate:
         return None
 
     def mover_agente(self, nf, nc):
-        # El costo se basa en el clima de la celda a la que llega
         clima_destino = self.mapa_clima[nf][nc]
         costo = 1
         if clima_destino == "Lluvia": costo += 4
@@ -164,8 +158,12 @@ class AgenteRescate:
         self.bateria -= costo
         self.posicion_agente = [nf, nc]
         
-        # El clima cambia un poco en cada paso (Simulación dinámica)
-        self.actualizar_clima_mapa()
+        # MODIFICACIÓN CLAVE: Sumamos un turno por cada movimiento individual
+        self.turnos_globales += 1
+        
+        # REGLA DE LOS 5 TURNOS: El clima cambia estrictamente si es múltiplo de 5
+        if self.turnos_globales % 5 == 0:
+            self.actualizar_clima_mapa()
         
         obj = self.mapa_objetos[nf][nc]
         if obj == 4: self.bateria = min(100, self.bateria + 40)
@@ -174,22 +172,18 @@ class AgenteRescate:
         return self.bateria > 0
 
 
-# --- ENDPOINT DE INTERCONEXIÓN PARA REACT ---
+# --- ENDPOINT CORREGIDO CON RECALCULACIÓN DINÁMICA ---
 @app.post("/solve")
 def solve_mission(data: MapData):
     filas = len(data.matrix)
     columnas = len(data.matrix[0])
     
-    # Instanciamos el agente de tu clase original
     agente = AgenteRescate(filas=filas, columnas=columnas)
-    
-    # Limpiamos las listas aleatorias por defecto para llenarlas con el mapa web
     agente.personas_pendientes = []
-    # Convertimos la posición inicial [x, y] de React a [fila, columna] de tu lógica de Python
     agente.posicion_agente = [data.start_pos[1], data.start_pos[0]]
     agente.bases = []
     
-    # Poblamos tu estructura con los datos exactos que vienen de React
+    # Cargamos el mapa inicial provisto por el Front
     for f in range(filas):
         for c in range(columnas):
             celda_web = data.matrix[f][c]
@@ -208,43 +202,46 @@ def solve_mission(data: MapData):
     algoritmo_elegido = data.algorithm
     personas_a_procesar = list(agente.personas_pendientes)
 
+    # RECALCULACIÓN DINÁMICA PASO A PASO:
     while personas_a_procesar and agente.bateria > 0:
         obj_p = personas_a_procesar[0]
         
-        if algoritmo_elegido == "BFS":
-            ruta_persona = agente.buscar_bfs(obj_p)
-        else:
-            ruta_persona = agente.buscar_a_estrella(obj_p)
-            
-        if not ... or not ruta_persona:
-            personas_a_procesar.pop(0)
-            continue
-            
-        for paso in ruta_persona[1:]:
-            ruta_python.append(list(paso))
-            agente.mover_agente(paso[0], paso[1])
-            
-        if agente.posicion_agente == obj_p:
-            agente.tiene_pasajero = True
-            agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0
-            
-            # Buscamos rutas a las bases usando tu misma lógica
+        # Decidimos el objetivo lógico basándonos en si tiene pasajero o no
+        if agente.tiene_pasajero:
             rutas_b = [agente.buscar_bfs(b) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(b) for b in agente.bases]
             rutas_validas = [r for r in rutas_b if r]
-            
-            if rutas_validas:
-                ruta_base = min(rutas_validas, key=len)
-                for paso in ruta_base[1:]:
-                    ruta_python.append(list(paso))
-                    agente.mover_agente(paso[0], paso[1])
-                    
-                if agente.posicion_agente in agente.bases:
-                    agente.tiene_pasajero = False
-                    personas_a_procesar.pop(0)
-            else:
-                personas_a_procesar.pop(0)
+            meta_actual = min(rutas_validas, key=len)[-1] if rutas_validas else None
+        else:
+            meta_actual = obj_p
 
-    # Traducimos de vuelta los pasos [fila, columna] a [x, y] para que React los pinte correctamente
+        if not meta_actual:
+            personas_a_procesar.pop(0)
+            continue
+
+        # Calculamos la ruta con las condiciones del mapa en este instante preciso
+        if algoritmo_elegido == "BFS":
+            ruta_calculada = agente.buscar_bfs(meta_actual)
+        else:
+            ruta_calculada = agente.buscar_a_estrella(meta_actual)
+
+        # Si no hay camino viable o ya se encuentra sobre el objetivo
+        if not ruta_calculada or len(ruta_calculada) <= 1:
+            if agente.tiene_pasajero and agente.posicion_agente in agente.bases:
+                agente.tiene_pasajero = False
+                personas_a_procesar.pop(0) # Ciudadano salvado
+            elif not agente.tiene_pasajero and agente.posicion_agente == obj_p:
+                agente.tiene_pasajero = True
+                agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 # Subió al vehículo
+            else:
+                personas_a_procesar.pop(0) # Inalcanzable
+            continue
+
+        # ¡AQUÍ ESTÁ EL CAMBIO DINÁMICO!: Avanza SOLO UN PASO. 
+        # Al regresar al 'while', volverá a calcular usando las condiciones climáticas del siguiente turno.
+        siguiente_paso = ruta_calculada[1]
+        ruta_python.append(list(siguiente_paso))
+        agente.mover_agente(siguiente_paso[0], siguiente_paso[1])
+
     ruta_frontend = [[paso[1], paso[0]] for paso in ruta_python]
     return {"ruta": ruta_frontend, "status": f"Ruta calculada con {algoritmo_elegido}"}
 
@@ -252,5 +249,4 @@ def solve_mission(data: MapData):
 # --- CONTROL DE EJECUCIÓN ---
 if __name__ == "__main__":
     import uvicorn
-    # Cambiamos temporalmente para arrancar la interfaz web en localhost
     uvicorn.run(app, host="127.0.0.1", port=8000)
