@@ -8,6 +8,7 @@ function App() {
   const [selectedWeather, setSelectedWeather] = useState('Despejado');
   const [agentPos, setAgentPos] = useState([0, 0]);
   const [turns, setTurns] = useState(0);
+  const [battery, setBattery] = useState(100); // <--- NUEVO ESTADO PARA LA BATERÍA
   const [algorithm, setAlgorithm] = useState('A*');
 
   const tools = [
@@ -20,9 +21,7 @@ function App() {
     { id: 0, name: 'Borrador', icon: '🗑️' },
   ];
 
-  // Función para generar un mapa inicial aleatorio respetando las reglas de tu backend
   const generarMapaAleatorio = () => {
-    // 1. Inicializar todo despejado y vacío (id: 0)
     let nuevoMapa = Array(size).fill(0).map(() => 
       Array(size).fill(null).map(() => ({ id: 0, weather: 'Despejado' }))
     );
@@ -33,10 +32,9 @@ function App() {
       return [x, y];
     };
 
-    // Forzar al robot en la posición [0, 0] para iniciar limpios
     setAgentPos([0, 0]);
+    setBattery(100); // Reseteamos la batería visual al regenerar
 
-    // 2. Colocar 2 Zonas Seguras (Bases)
     let basesPuestas = 0;
     while (basesPuestas < 2) {
       const [x, y] = obtenerCoordAleatoria();
@@ -46,7 +44,6 @@ function App() {
       }
     }
 
-    // 3. Colocar 10 Obstáculos (Muros)
     let murosPuestos = 0;
     while (murosPuestos < 10) {
       const [x, y] = obtenerCoordAleatoria();
@@ -56,7 +53,6 @@ function App() {
       }
     }
 
-    // 4. Colocar 2 Personas
     let personasPuestas = 0;
     while (personasPuestas < 2) {
       const [x, y] = obtenerCoordAleatoria();
@@ -66,15 +62,13 @@ function App() {
       }
     }
 
-    // 5. Colocar Baterías y Climas por celda aleatorios
     const climas = ['Despejado', 'Lluvia', 'Tormenta'];
-    const pesosClima = [0.70, 0.20, 0.10]; // 70% sol, 20% lluvia, 10% tormenta
+    const pesosClima = [0.70, 0.20, 0.10]; 
 
     for (let y = 0; y < size; y++) {
       for (let x = 0; x < size; x++) {
         if (x === 0 && y === 0) continue;
 
-        // Asignar Clima Aleatorio usando distribución de pesos básica
         const randClima = Math.random();
         let climaElegido = 'Despejado';
         if (randClima < pesosClima[0]) climaElegido = 'Despejado';
@@ -83,13 +77,12 @@ function App() {
 
         nuevoMapa[y][x].weather = climaElegido;
 
-        // Si la casilla está vacía, evaluar probabilidad de baterías
         if (nuevoMapa[y][x].id === 0) {
           const randBat = Math.random();
           if (randBat < 0.10) {
-            nuevoMapa[y][x].id = 5; // Bat. 100%
+            nuevoMapa[y][x].id = 5; 
           } else if (randBat < 0.20) {
-            nuevoMapa[y][x].id = 4; // Bat. 40%
+            nuevoMapa[y][x].id = 4; 
           }
         }
       }
@@ -99,7 +92,6 @@ function App() {
     setTurns(0);
   };
 
-  // Generar el mapa automáticamente la primera vez que se monta la app
   useEffect(() => {
     generarMapaAleatorio();
   }, []);
@@ -114,7 +106,6 @@ function App() {
     }
   };
 
-  // NUEVA FUNCIÓN: Sincronizada para renderizar los climas cambiantes paso a paso
   const enviarAlBackend = async () => {
     try {
       const res = await axios.post('http://localhost:8000/solve', {
@@ -125,26 +116,23 @@ function App() {
 
       const { steps, status } = res.data;
 
-      // Si el backend usó la estructura 'steps' de forma exitosa
       if (steps && steps.length > 0) {
         steps.forEach((step, index) => {
           setTimeout(() => {
-            // 1. Actualizamos la posición del robot en la UI
             setAgentPos(step.agent_pos);
-            
-            // 2. Avanzamos el contador visual de turnos
             setTurns(index);
+            setBattery(step.bateria); // <--- ACTUALIZAMOS EL ESTADO DE LA BATERÍA PASO A PASO
 
-            // 3. Mapeamos la matriz completa con el estado del clima del backend en este frame
             setMatrix((prevMatrix) => {
               return prevMatrix.map((row, y) => 
                 row.map((cell, x) => {
                   const nuevoClimaBackend = step.weather_matrix[y][x];
                   let nuevoId = cell.id;
 
-                  // Lógica visual: si el robot pisa una persona, quítala del mapa en el front
                   if (step.agent_pos[0] === x && step.agent_pos[1] === y) {
                     if (cell.id === 2) nuevoId = 0;
+                    // Opcional: si pisa una batería (4 o 5) también la podemos limpiar visualmente
+                    if (cell.id === 4 || cell.id === 5) nuevoId = 0;
                   }
 
                   return {
@@ -155,16 +143,21 @@ function App() {
                 })
               );
             });
-          }, index * 450); // 450ms por paso para apreciar las alteraciones dinámicas del clima
+          }, index * 450); 
         });
       } else {
-        // Fallback por si hay advertencias o faltan elementos en el mapa
         alert(status || "No se encontró una ruta válida.");
       }
     } catch (err) {
-      alert("Error: Verifica que el servidor Python esté corriendo en el puerto 8000 o revisa la consola.");
-      console.error(err);
+      alert("Error: Verifica que el servidor Python esté corriendo en el puerto 8000.");
     }
+  };
+
+  // Función auxiliar para cambiar el color de la barra según el porcentaje
+  const getBatteryColor = (value) => {
+    if (value > 50) return 'bg-emerald-500';
+    if (value > 20) return 'bg-amber-500';
+    return 'bg-rose-500 animate-pulse';
   };
 
   if (matrix.length === 0) return <div className="text-center text-cyan-400 mt-10">Cargando Mapa...</div>;
@@ -200,7 +193,7 @@ function App() {
           </button>
         </aside>
 
-        {/* MAPA INTERACTIVO CON CLIMAS EN TIEMPO REAL */}
+        {/* MAPA INTERACTIVO */}
         <section className="bg-slate-900 p-2 rounded-xl border-4 border-slate-800 shadow-2xl overflow-auto">
           <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
             {matrix.map((row, y) => row.map((cell, x) => (
@@ -224,24 +217,42 @@ function App() {
           </div>
         </section>
 
-        {/* CONTROLES Y ACCIÓN */}
+        {/* CONTROLES Y PANEL DE ESTADO */}
         <aside className="w-full lg:w-64 space-y-4">
           <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700">
             <p className="text-[10px] font-bold text-slate-500 mb-2 uppercase">Algoritmo de Búsqueda</p>
             <div className="flex gap-2">
               {['BFS', 'A*'].map(alg => (
                 <button key={alg} onClick={() => setAlgorithm(alg)}
-                  className={`flex-1 py-2 rounded-xl font-bold text-xs border transition-all ${algorithm === alg ? 'bg-cyan-600 border-cyan-400 text-white' : 'bg-slate-700/50 border-transparent text-slate-400'}`}>
+                  className={`flex-1 py-2 rounded-xl font-bold text-xs border transition-all ${algorithm === alg ? 'bg-cyan-600 border-cyan-400' : 'bg-slate-700/50 border-transparent text-slate-400'}`}>
                   {alg}
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="bg-slate-800/30 p-4 rounded-2xl border border-slate-700">
-             <p className="text-[10px] text-slate-400 font-mono">TURNOS: {turns}</p>
-             <p className="text-[10px] text-slate-400 uppercase font-mono">PERSONAS RESTANTES: {matrix.flat().filter(c => c.id === 2).length}</p>
+          {/* INDICADORES EN TIEMPO REAL ACTUALIZADOS */}
+          <div className="bg-slate-800/30 p-4 rounded-2xl border border-slate-700 space-y-3">
+             {/* NUEVO: BARRA DE ENERGÍA DE BATERÍA */}
+             <div>
+               <div className="flex justify-between items-center mb-1">
+                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Energía del Robot</p>
+                 <span className={`text-xs font-mono font-bold ${battery <= 20 ? 'text-rose-400' : 'text-cyan-400'}`}>{battery}%</span>
+               </div>
+               <div className="w-full h-3 bg-slate-950 rounded-full overflow-hidden border border-slate-700">
+                 <div 
+                   className={`h-full transition-all duration-300 ${getBatteryColor(battery)}`}
+                   style={{ width: `${battery}%` }}
+                 />
+               </div>
+             </div>
+
+             <div className="pt-2 border-t border-slate-700/50 space-y-1">
+               <p className="text-[10px] text-slate-400 font-mono">TURNOS: {turns}</p>
+               <p className="text-[10px] text-slate-400 uppercase font-mono">PERSONAS RESTANTES: {matrix.flat().filter(c => c.id === 2).length}</p>
+             </div>
           </div>
+          
           <button onClick={enviarAlBackend} className="w-full py-4 bg-blue-600 rounded-2xl font-bold uppercase tracking-widest hover:bg-blue-500 transition-all shadow-lg text-sm">
             INICIAR RESCATE
           </button>
