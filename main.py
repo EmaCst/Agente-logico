@@ -36,7 +36,7 @@ class Mission(BaseModel):
     algorithm: str = "A*"
 
 # =========================================================================
-# ENDPOINT PRINCIPAL: SOLVE (CORREGIDO)
+# ENDPOINT PRINCIPAL: SOLVE (CORREGIDO Y OPTIMIZADO PARA EL PLAN)
 # =========================================================================
 @app.post("/solve")
 async def solve(data: Mission):
@@ -77,8 +77,8 @@ async def solve(data: Mission):
                 agente.mapa_objetos[y][x] = 1
                 
             elif celda_web.id in [4, 5]:  # Baterías
-                # Inicialmente el terreno está libre, pero guardamos su posición de recarga
-                agente.mapa_objetos[y][x] = 0
+                # CORRECCIÓN: Registramos la batería en el mapa de objetos para que el agente la vea de verdad
+                agente.mapa_objetos[y][x] = celda_web.id
                 baterias_disponibles.append({"pos": [y, x], "tipo": celda_web.id})
             else:
                 agente.mapa_objetos[y][x] = 0
@@ -91,21 +91,23 @@ async def solve(data: Mission):
 
     historial_simulacion = []
 
-    # Frame inicial (Turno 0)
+    # Frame inicial (Turno 0) con plan vacío por defecto
     historial_simulacion.append({
         "agent_pos": [agente.posicion_agente[1], agente.posicion_agente[0]],
         "weather_matrix": [list(fila) for fila in agente.mapa_clima],
-        "bateria": agente.bateria  
+        "bateria": agente.bateria,
+        "plan": [[agente.posicion_agente[1], agente.posicion_agente[0]]]
     })
 
     personas_a_procesar = list(agente.personas_pendientes)
     algoritmo_elegido = data.algorithm
 
-    # Bucle Principal de Búsqueda
+# Bucle Principal de Búsqueda Corregido
     while personas_a_procesar and agente.bateria > 0:
         obj_p = personas_a_procesar[0]
         meta_actual = None
         
+        # Determinar el objetivo actual del robot
         if getattr(agente, 'tiene_pasajero', False):
             rutas_b = [
                 agente.buscar_bfs(b) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(b) 
@@ -117,7 +119,7 @@ async def solve(data: Mission):
         else:
             meta_actual = obj_p
 
-        # Ejecución de los algoritmos
+        # Ejecución del algoritmo elegido para la meta actual
         if algoritmo_elegido == "BFS" and hasattr(agente, 'buscar_bfs'):
             ruta_actual = agente.buscar_bfs(meta_actual)
         elif hasattr(agente, 'buscar_a_estrella'):
@@ -125,35 +127,51 @@ async def solve(data: Mission):
         else:
             ruta_actual = []
 
+        # Si no hay ruta o ya estamos parados en la meta de este trayecto
         if not ruta_actual or len(ruta_actual) <= 1:
+            # CASO A: Estamos en la base con un pasajero -> Lo dejamos y removemos de la lista de pendientes
             if getattr(agente, 'tiene_pasajero', False) and agente.posicion_agente in agente.bases:
                 agente.tiene_pasajero = False
-                personas_a_procesar.pop(0) 
+                if personas_a_procesar:
+                    personas_a_procesar.pop(0) # Se completa el rescate de esta persona de manera oficial
+            
+            # CASO B: Llegamos a la ubicación de la persona -> La subimos a bordo
             elif not getattr(agente, 'tiene_pasajero', False) and agente.posicion_agente == obj_p:
                 agente.tiene_pasajero = True
-                agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0
+                agente.mapa_objects = getattr(agente, 'mapa_objetos', None)
+                if agente.mapa_objetos is not None:
+                    agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 # Limpieza lógica interna
+            
+            # CASO C: Bloqueo de seguridad si no puede llegar a ningún lado
             else:
-                personas_a_procesar.pop(0) 
+                if personas_a_procesar:
+                    personas_a_procesar.pop(0)
             continue
 
-        # Mover un paso
+        # Mover un paso en el camino calculado
         siguiente_paso = ruta_actual[1]
         agente.mover_agente(siguiente_paso[0], siguiente_paso[1]) 
         
-        # Gestión de recargas interactivas
+        # Gestión de recargas interactivas en el camino
         for b in list(baterias_disponibles):
             if agente.posicion_agente == b["pos"]:
                 if b["tipo"] == 5: 
                     agente.bateria = 100
                 elif b["tipo"] == 4: 
                     agente.bateria = min(100, agente.bateria + 40)
+                if hasattr(agente, 'mapa_objetos'):
+                    agente.mapa_objetos[b["pos"][0]][b["pos"][1]] = 0
                 baterias_disponibles.remove(b)
 
+        # Extraer el plan proyectado restante (para pintar la estela cian)
+        plan_proyectado = [[nodo[1], nodo[0]] for nodo in ruta_actual[1:]]
+
         historial_simulacion.append({
-    "agent_pos": [siguiente_paso[1], siguiente_paso[0]], # <-- Debe ser [X, Y] para React
-    "weather_matrix": [list(fila) for fila in agente.mapa_clima],
-    "bateria": max(0, agente.bateria)
-})
+            "agent_pos": [siguiente_paso[1], siguiente_paso[0]], 
+            "weather_matrix": [list(fila) for fila in agente.mapa_clima],
+            "bateria": max(0, agente.bateria),
+            "plan": plan_proyectado  
+        })
 
     if len(historial_simulacion) <= 1:
         return {
