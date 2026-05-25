@@ -3,13 +3,14 @@ import random
 import time
 import heapq
 import os
+import hashlib
 from collections import deque
 from typing import List
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import uvicorn
 
-# --- CONFIGURACIÓN DE FASTAPI (PUENTE WEB) ---
 app = FastAPI()
 
 app.add_middleware(
@@ -29,8 +30,44 @@ class MapData(BaseModel):
     start_pos: List[int]
     algorithm: str
 
+# --- PERSISTENCIA JSON ADAPTADA ---
+ARCHIVO_MEMORIA = "memoria_estados.json"
 
-# --- TU CLASE ORIGINAL CON LAS NUEVAS REGLAS DE NEGOCIO ---
+def cargar_memoria():
+    if os.path.exists(ARCHIVO_MEMORIA):
+        try:
+            with open(ARCHIVO_MEMORIA, "r") as f:
+                contenido = f.read()
+                if not contenido: return {}
+                data = json.loads(contenido)
+                
+                # Reconstruimos la estructura: { ID_MAPA: { ESTADO_STR: { (f,c): valores } } }
+                memoria_reconstruida = {}
+                for mapa_id, estados in data.items():
+                    memoria_reconstruida[mapa_id] = {}
+                    for estado_id, coordenadas in estados.items():
+                        memoria_reconstruida[mapa_id][int(estado_id)] = {
+                            tuple(map(int, k.split(','))): v for k, v in coordenadas.items()
+                        }
+                return memoria_reconstruida
+        except Exception as e:
+            return {}
+    return {}
+
+def guardar_memoria(memoria_global):
+    # Serializamos las llaves numéricas y tuplas a strings para JSON
+    data_serializable = {}
+    for mapa_id, estados in memoria_global.items():
+        data_serializable[mapa_id] = {}
+        for estado_id, coordenadas in estados.items():
+            data_serializable[mapa_id][str(estado_id)] = {
+                f"{k[0]},{k[1]}": v for k, v in coordenadas.items()
+            }
+    with open(ARCHIVO_MEMORIA, "w") as f:
+        json.dump(data_serializable, f)
+
+MEMORIA_GLOBAL_MAPAS = cargar_memoria()
+
 class AgenteRescate:
     def __init__(self, filas=15, columnas=15):
         self.filas = filas
@@ -42,102 +79,124 @@ class AgenteRescate:
         self.personas_pendientes = []
         self.bases = []
         self.tiene_pasajero = False
-        
-        # REGLA: Contador global de turnos internos del agente
         self.turnos_globales = 0 
+        self.id_mapa_actual = None
         
-        # NOTA: Desactivamos la generación aleatoria por defecto en el constructor 
-        # para heredar estrictamente el escenario diseñado o congelado en el Frontend.
+        # 1) REQUISITO: Contador del estado/fase del mapa (cada estado dura 5 turnos)
+        self.estado_mapa_actual = 0
+        # 2) REQUISITO: Contador de cuántos movimientos faltan para que cambie el clima
+        self.movimientos_para_cambio = 5
 
-    def colocar_objetos(self):
-        while len(self.bases) < 2:
-            f, c = random.randint(0, self.filas - 1), random.randint(0, self.columnas - 1)
-            if [f, c] != [0, 0] and [f, c] not in self.bases:
-                self.bases.append([f, c])
-
-        puestos = 0
-        while puestos < 10:
-            f, c = random.randint(0, self.filas - 1), random.randint(0, self.columnas - 1)
-            if [f, c] != [0, 0] and [f, c] not in self.bases and self.mapa_objetos[f][c] == 0:
-                self.mapa_objetos[f][c] = 1
-                puestos += 1
-
-        puestas = 0
-        while puestas < 2:
-            f, c = random.randint(0, self.filas - 1), random.randint(0, self.columnas - 1)
-            if self.mapa_objetos[f][c] == 0 and [f, c] != [0, 0] and [f, c] not in self.bases:
-                self.mapa_objetos[f][c] = 2
-                self.personas_pendientes.append([f, c])
-                puestas += 1
+    def identificar_y_cargar_mapa(self, matrix_web):
+        estructura_pura = [[celda.id for celda in fila] for fila in matrix_web]
+        matriz_string = json.dumps(estructura_pura, sort_keys=True)
+        self.id_mapa_actual = hashlib.md5(matriz_string.encode()).hexdigest()[:8]
         
+        if self.id_mapa_actual not in MEMORIA_GLOBAL_MAPAS:
+            print(f"🧠 [MEMORIA UMG]: Nuevo mapa detectado (ID: {self.id_mapa_actual}).")
+            MEMORIA_GLOBAL_MAPAS[self.id_mapa_actual] = {}
+        else:
+            print(f"💾 [MEMORIA UMG]: Reconozco este escenario (ID: {self.id_mapa_actual}).")
+
+    # NUEVO MÉTODO: El bot ahora guarda una "instantánea" de TODO el mapa cuando cambia el estado
+    def guardar_instantanea_clima_mapa(self):
+        if not self.id_mapa_actual: return
+        
+        if self.id_mapa_actual not in MEMORIA_GLOBAL_MAPAS:
+            MEMORIA_GLOBAL_MAPAS[self.id_mapa_actual] = {}
+            
+        memoria_mapa = MEMORIA_GLOBAL_MAPAS[self.id_mapa_actual]
+        
+        # Si es la primera vez que vemos este estado en este mapa, creamos su diccionario
+        if self.estado_mapa_actual not in memoria_mapa:
+            memoria_mapa[self.estado_mapa_actual] = {}
+            
+        # Guardamos el clima observado casilla por casilla para ESTE estado específico
         for f in range(self.filas):
             for c in range(self.columnas):
-                if self.mapa_objetos[f][c] == 0 and [f, c] not in self.bases and [f, c] != [0, 0]:
-                    prob = random.random()
-                    if prob < 0.10: self.mapa_objetos[f][c] = 5
-                    elif prob < 0.20: self.mapa_objetos[f][c] = 4
+                coord = (f, c)
+                clima_observado = self.mapa_clima[f][c]
+                
+                if coord not in memoria_mapa[self.estado_mapa_actual]:
+                    memoria_mapa[self.estado_mapa_actual][coord] = {"Despejado": 0, "Lluvia": 0, "Tormenta": 0}
+                
+                # Atenuación ligera y refuerzo
+                memoria_mapa[self.estado_mapa_actual][coord][clima_observado] *= 0.95
+                memoria_mapa[self.estado_mapa_actual][coord][clima_observado] += 1
+                
+        guardar_memoria(MEMORIA_GLOBAL_MAPAS)
 
     def actualizar_clima_mapa(self):
-        # MODIFICACIÓN CIENTÍFICA: Forzamos una semilla basada en el turno.
-        # Esto garantiza que el clima mute de forma IDÉNTICA para BFS y A* en el mismo turno.
         random.seed(self.turnos_globales)
-        
         opciones = ["Despejado", "Lluvia", "Tormenta"]
         pesos = [70, 20, 10]
         for f in range(self.filas):
             for c in range(self.columnas):
                 self.mapa_clima[f][c] = random.choices(opciones, weights=pesos, k=1)[0]
-        
-        # Restauramos el estado del generador aleatorio para no congelar otros procesos externos
         random.seed(None)
-
-    def dibujar_consola(self, algoritmo):
-        os.system('cls' if os.name == 'nt' else 'clear')
-        clima_local = self.mapa_clima[self.posicion_agente[0]][self.posicion_agente[1]]
-        
-        print(f"\n--- MONITOR UMG | Algoritmo: {algoritmo} | Turno General: {self.turnos_globales} ---")
-        print(f"Batería: {self.bateria}% | Clima Local: {clima_local}")
-        print("-" * (self.columnas * 3))
-        
-        for f in range(self.filas):
-            fila_txt = ""
-            for c in range(self.columnas):
-                if self.mapa_clima[f][c] == "Despejado": char = "."
-                elif self.mapa_clima[f][c] == "Lluvia": char = "~"
-                else: char = "Z"
-
-                if [f, c] == self.posicion_agente: fila_txt += " A "
-                elif [f, c] in self.bases: fila_txt += " S "
-                elif self.mapa_objetos[f][c] == 1: fila_txt += " # "
-                elif self.mapa_objetos[f][c] == 2: fila_txt += " P "
-                elif self.mapa_objetos[f][c] == 5: fila_txt += " * "
-                elif self.mapa_objetos[f][c] == 4: fila_txt += " o "
-                else: fila_txt += f" {char} "
-            print(fila_txt)
-        print("-" * (self.columnas * 3))
 
     def buscar_a_estrella(self, objetivo):
         inicio, meta = tuple(self.posicion_agente), tuple(objetivo)
-        frontera = [(0, inicio, [], 0)]
+        # La frontera guarda: (f_total, (f, c), camino, g_acumulado, turnos_simulados)
+        frontera = [(0, inicio, [], 0, 0)]
         visitados = {}
         costos_clima = {"Despejado": 1, "Lluvia": 5, "Tormenta": 20}
         penalizacion = 1 if self.tiene_pasajero else 0
-
+        memoria_mapa = MEMORIA_GLOBAL_MAPAS.get(self.id_mapa_actual, {})
+        
         while frontera:
-            f_val, (f, c), camino, g = heapq.heappop(frontera)
+            f_val, (f, c), camino, g, turnos_sim = heapq.heappop(frontera)
             if (f, c) == meta: return camino + [(f, c)]
-            if (f, c) in visitados and visitados[(f, c)] <= g: continue
-            visitados[(f, c)] = g
-
+            
+            # El estado de visitados ahora debe considerar cuántos turnos nos tomó llegar,
+            # ya que el costo de una casilla cambia según el tiempo proyectado.
+            estado_visita = ((f, c), turnos_sim)
+            if estado_visita in visitados and visitados[estado_visita] <= g: continue
+            visitados[estado_visita] = g
+            
+            # --- CÁLCULO DE ANTICIPACIÓN TEMPORAL ---
+            # Proyectamos cuántos movimientos faltarían en esta simulación mental
+            movs_restantes_sim = self.movimientos_para_cambio - turnos_sim
+            estado_mapa_sim = self.estado_mapa_actual
+            
+            # Si en la mente del bot ya pasaron los movimientos para el cambio, avanza al siguiente estado
+            if movs_restantes_sim <= 0:
+                # Calcula cuántos bloques de 5 turnos enteros han pasado en el futuro
+                bloques_extra = (abs(movs_restantes_sim) // 5) + 1
+                estado_mapa_sim += bloques_extra
+            
             for df, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nf, nc = f + df, c + dc
                 if 0 <= nf < self.filas and 0 <= nc < self.columnas and self.mapa_objetos[nf][nc] != 1:
-                    clima_celda = self.mapa_clima[nf][nc]
-                    costo_paso = costos_clima[clima_celda] + penalizacion
+                    
+                    # 1. Costo base del clima del turno presente
+                    clima_proyectado = self.mapa_clima[nf][nc]
+                    costo_paso = costos_clima[clima_proyectado] + penalizacion
+                    
+                    # 2. ANTICIPACIÓN: Si la simulación mental cruza al estado futuro, consulta la memoria
+                    if estado_mapa_sim != self.estado_mapa_actual:
+                        if estado_mapa_sim in memoria_mapa and (nf, nc) in memoria_mapa[estado_mapa_sim]:
+                            historial_futuro = memoria_mapa[estado_mapa_sim][(nf, nc)]
+                            total = sum(historial_futuro.values())
+                            if total > 0:
+                                # El bot predice qué clima habrá allá en ese estado futuro
+                                prob_tormenta = historial_futuro["Tormenta"] / total
+                                prob_lluvia = historial_futuro["Lluvia"] / total
+                                
+                                # Sustituimos el coste del presente por el coste estimado del futuro
+                                costo_futuro_estimado = (prob_tormenta * 20) + (prob_lluvia * 5) + 1
+                                costo_paso = int(costo_futuro_estimado) + penalizacion
                     
                     nuevo_g = g + costo_paso
                     h = abs(nf - meta[0]) + abs(nc - meta[1])
-                    heapq.heappush(frontera, (nuevo_g + h, (nf, nc), camino + [(f, c)], nuevo_g))
+                    
+                    heapq.heappush(frontera, (
+                        nuevo_g + h, 
+                        (nf, nc), 
+                        camino + [(f, c)], 
+                        nuevo_g, 
+                        turnos_sim + 1  # Incrementa un turno en la simulación mental
+                    ))
         return None
 
     def buscar_bfs(self, objetivo):
@@ -156,56 +215,70 @@ class AgenteRescate:
 
     def mover_agente(self, nf, nc):
         clima_destino = self.mapa_clima[nf][nc]
+        
+        # Costos de batería de este movimiento
         costo = 1
         if clima_destino == "Lluvia": costo += 4
         if clima_destino == "Tormenta": costo += 19
         if self.tiene_pasajero: costo += 1
-        
         self.bateria -= costo
-        self.posicion_agente = [nf, nc]
         
+        self.posicion_agente = [nf, nc]
         self.turnos_globales += 1
         
-        # REGLA DE LOS 5 TURNOS
-        if self.turnos_globales % 5 == 0:
-            self.actualizar_clima_mapa()
+        # Actualizamos los dos nuevos contadores que propusiste
+        self.movimientos_para_cambio -= 1
+        clima_cambio = (self.movimientos_para_cambio == 0)
         
+        if clima_cambio:
+            self.estado_mapa_actual += 1         # Incrementa el estado del mapa
+            self.movimientos_para_cambio = 5     # Resetea el contador regresivo
+            self.actualizar_clima_mapa()         # Ejecuta el cambio físico del clima
+            self.guardar_instantanea_clima_mapa() # Guarda todo el mapa bajo el nuevo estado
+            
         obj = self.mapa_objetos[nf][nc]
         if obj == 4: self.bateria = min(100, self.bateria + 40)
         elif obj == 5: self.bateria = 100
         if obj in [4, 5]: self.mapa_objetos[nf][nc] = 0
-        return self.bateria > 0
+        
+        return self.bateria > 0, clima_cambio
 
-
-# --- ENDPOINT CORREGIDO CON RECALCULACIÓN DINÁMICA ---
 @app.post("/solve")
 def solve_mission(data: MapData):
     filas = len(data.matrix)
     columnas = len(data.matrix[0])
-    
     agente = AgenteRescate(filas=filas, columnas=columnas)
+    agente.identificar_y_cargar_mapa(data.matrix)
+    
+    # Sincronizamos los contadores iniciales según la web externa
     agente.personas_pendientes = []
     agente.posicion_agente = [data.start_pos[1], data.start_pos[0]]
     agente.bases = []
     
-    # Cargamos el mapa inicial provisto por el Front de forma exacta
     for f in range(filas):
         for c in range(columnas):
             celda_web = data.matrix[f][c]
             agente.mapa_objetos[f][c] = celda_web.id
             agente.mapa_clima[f][c] = celda_web.weather
+            if celda_web.id == 2: agente.personas_pendientes.append([f, c])
+            elif celda_web.id == 8: agente.bases.append([f, c])
             
-            if celda_web.id == 2:
-                agente.personas_pendientes.append([f, c])
-            elif celda_web.id == 8:
-                agente.bases.append([f, c])
-                
     if not agente.personas_pendientes or not agente.bases:
-        return {"ruta": [], "status": "Faltan personas o bases en el mapa interactivo"}
-
-    ruta_python = [list(agente.posicion_agente)]
+        return {"steps": [], "status": "Faltan personas o bases"}
+        
+    # Primera captura del mapa al arrancar la petición
+    agente.guardar_instantanea_clima_mapa()
+        
     algoritmo_elegido = data.algorithm
     personas_a_procesar = list(agente.personas_pendientes)
+    steps_json = []
+    steps_json.append({
+        "agent_pos": [agente.posicion_agente[1], agente.posicion_agente[0]],
+        "bateria": max(0, agente.bateria),
+        "weather_matrix": [list(fila) for fila in agente.mapa_clima]
+    })
+    
+    ruta_actual = []
 
     while personas_a_procesar and agente.bateria > 0:
         obj_p = personas_a_procesar[0]
@@ -216,35 +289,44 @@ def solve_mission(data: MapData):
             meta_actual = min(rutas_validas, key=len)[-1] if rutas_validas else None
         else:
             meta_actual = obj_p
-
+            
         if not meta_actual:
             personas_a_procesar.pop(0)
+            ruta_actual = []
             continue
-
-        if algoritmo_elegido == "BFS":
-            ruta_calculada = agente.buscar_bfs(meta_actual)
-        else:
-            ruta_calculada = agente.buscar_a_estrella(meta_actual)
-
-        if not ruta_calculada or len(ruta_calculada) <= 1:
+            
+        if not ruta_actual:
+            ruta_actual = agente.buscar_bfs(meta_actual) if algoritmo_elegido == "BFS" else agente.buscar_a_estrella(meta_actual)
+            
+        if not ruta_actual or len(ruta_actual) <= 1:
             if agente.tiene_pasajero and agente.posicion_agente in agente.bases:
                 agente.tiene_pasajero = False
                 personas_a_procesar.pop(0) 
             elif not agente.tiene_pasajero and agente.posicion_agente == obj_p:
                 agente.tiene_pasajero = True
                 agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 
+                if obj_p in personas_a_procesar: personas_a_procesar.remove(obj_p)
             else:
                 personas_a_procesar.pop(0) 
+            ruta_actual = []
             continue
+            
+        siguiente_paso = ruta_actual[1]
+        continua_vivo, clima_cambio = agente.mover_agente(siguiente_paso[0], siguiente_paso[1])
+        ruta_actual.pop(0)
+        
+        # REPLANTEAMIENTO: Si el clima cambia físicamente, recalculamos para adaptarnos a sorpresas
+        if clima_cambio:
+            ruta_actual = []
 
-        siguiente_paso = ruta_calculada[1]
-        ruta_python.append(list(siguiente_paso))
-        agente.mover_agente(siguiente_paso[0], siguiente_paso[1])
-
-    ruta_frontend = [[paso[1], paso[0]] for paso in ruta_python]
-    return {"ruta": ruta_frontend, "status": f"Ruta calculada con {algoritmo_elegido}"}
-
+        steps_json.append({
+            "agent_pos": [agente.posicion_agente[1], agente.posicion_agente[0]],
+            "bateria": max(0, agente.bateria),
+            "weather_matrix": [list(fila) for fila in agente.mapa_clima]
+        })
+        if not continua_vivo: break
+        
+    return {"steps": steps_json, "status": f"Simulación exitosa con {algoritmo_elegido}"}
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

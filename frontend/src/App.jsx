@@ -1,18 +1,21 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 function App() {
   const size = 15;
   const [matrix, setMatrix] = useState([]);
-  const [backupMatrix, setBackupMatrix] = useState([]); // <--- NUEVO: Para guardar el mapa original antes de la simulación
+  const [backupMatrix, setBackupMatrix] = useState([]); 
   const [selectedTool, setSelectedTool] = useState(1);
   const [selectedWeather, setSelectedWeather] = useState('Despejado');
   const [agentPos, setAgentPos] = useState([0, 0]);
-  const [initialAgentPos, setInitialAgentPos] = useState([0, 0]); // <--- NUEVO: Guarda la posición inicial elegida por el usuario
+  const [initialAgentPos, setInitialAgentPos] = useState([0, 0]); 
   const [turns, setTurns] = useState(0);
   const [battery, setBattery] = useState(100);
   const [energyConsumed, setEnergyConsumed] = useState(0); 
   const [algorithm, setAlgorithm] = useState('A*');
+
+  // Control seguro de animaciones para limpiar los setTimeout activos
+  const simTimerRef = useRef([]);
 
   const tools = [
     { id: 1, name: 'Muro', icon: '🧱' },
@@ -25,6 +28,9 @@ function App() {
   ];
 
   const generarMapaAleatorio = () => {
+    // Cancelar cualquier animación corriendo antes de resetear
+    limpiarTemporizadores();
+
     let nuevoMapa = Array(size).fill(0).map(() => 
       Array(size).fill(null).map(() => ({ id: 0, weather: 'Despejado' }))
     );
@@ -36,7 +42,7 @@ function App() {
     };
 
     setAgentPos([0, 0]);
-    setInitialAgentPos([0, 0]); // Sincroniza posición inicial backup
+    setInitialAgentPos([0, 0]); 
     setBattery(100); 
     setEnergyConsumed(0); 
 
@@ -94,28 +100,35 @@ function App() {
     }
 
     setMatrix(nuevoMapa);
-    setBackupMatrix(JSON.parse(JSON.stringify(nuevoMapa))); // Guardamos copia pura del escenario inicial
+    setBackupMatrix(JSON.parse(JSON.stringify(nuevoMapa))); 
     setTurns(0);
   };
 
   useEffect(() => {
     generarMapaAleatorio();
+    // Limpieza al desmontar el componente
+    return () => limpiarTemporizadores();
   }, []);
 
   const handleCellClick = (x, y) => {
     if (selectedTool === 7) {
       setAgentPos([x, y]);
-      setInitialAgentPos([x, y]); // Si el usuario mueve el origen manualmente, lo guardamos en el backup
+      setInitialAgentPos([x, y]); 
     } else {
       const newMatrix = [...matrix];
       newMatrix[y][x] = { id: selectedTool, weather: selectedWeather };
       setMatrix(newMatrix);
-      setBackupMatrix(JSON.parse(JSON.stringify(newMatrix))); // Actualiza el backup con la edición manual del usuario
+      setBackupMatrix(JSON.parse(JSON.stringify(newMatrix))); 
     }
   };
 
-  // <--- NUEVO: Función para limpiar simulación actual y regresar al estado del escenario inicial
+  const limpiarTemporizadores = () => {
+    simTimerRef.current.forEach(id => clearTimeout(id));
+    simTimerRef.current = [];
+  };
+
   const restaurarEscenarioOriginal = () => {
+    limpiarTemporizadores();
     setMatrix(JSON.parse(JSON.stringify(backupMatrix))); 
     setAgentPos([...initialAgentPos]);
     setBattery(100);
@@ -125,14 +138,16 @@ function App() {
 
   const enviarAlBackend = async () => {
     try {
+      // Detener cualquier reproducción previa que esté en curso
+      limpiarTemporizadores();
       setTurns(0);
       setEnergyConsumed(0);
 
       const res = await axios.post('http://127.0.0.1:8000/solve', {
-  matrix: matrix,
-  start_pos: agentPos,
-  algorithm: algorithm 
-});
+        matrix: matrix,
+        start_pos: agentPos,
+        algorithm: algorithm 
+      });
 
       const { steps, status } = res.data;
 
@@ -140,7 +155,7 @@ function App() {
         let acumuladorEnergia = 0;
 
         steps.forEach((step, index) => {
-          setTimeout(() => {
+          const timerId = setTimeout(() => {
             setAgentPos(step.agent_pos);
             setTurns(index);
             setBattery(step.bateria);
@@ -161,6 +176,7 @@ function App() {
                   const nuevoClimaBackend = step.weather_matrix[y][x];
                   let nuevoId = cell.id;
 
+                  // Modificación del entorno según la interacción del agente en ese casillero
                   if (step.agent_pos[0] === x && step.agent_pos[1] === y) {
                     if (cell.id === 2) nuevoId = 0;
                     if (cell.id === 4 || cell.id === 5) nuevoId = 0;
@@ -175,6 +191,8 @@ function App() {
               );
             });
           }, index * 450); 
+
+          simTimerRef.current.push(timerId);
         });
       } else {
         alert(status || "No se encontró una ruta válida.");
@@ -221,7 +239,6 @@ function App() {
           <button onClick={generarMapaAleatorio} className="w-full py-2 bg-slate-700 hover:bg-slate-600 rounded-xl font-bold text-xs uppercase border border-slate-600 transition-all">
             🔄 Regenerar Mapa
           </button>
-          {/* NUEVO BOTÓN DE RESTAURACIÓN INTEGRADO EN TU ASIDE */}
           <button onClick={restaurarEscenarioOriginal} className="w-full py-2 bg-amber-700/60 hover:bg-amber-600 rounded-xl font-bold text-xs uppercase border border-amber-600 transition-all">
             ⏪ Restaurar Escenario
           </button>
@@ -290,8 +307,10 @@ function App() {
                  <span className="font-bold">{energyConsumed} unidades</span>
                </p>
                <p className="text-[10px] text-slate-400 uppercase font-mono flex justify-between pt-1">
-                 <span>PERSONAS RESTANTES:</span>
-                 <span className="font-bold text-white">{matrix.flat().filter(c => c.id === 2).length}</span>
+                 <span>PERSONAS EN MAPA:</span>
+                 <span className="font-bold text-white">
+                   {matrix.flat().filter(c => c.id === 2).length}
+                 </span>
                </p>
              </div>
           </div>
