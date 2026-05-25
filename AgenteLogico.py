@@ -68,6 +68,7 @@ def guardar_memoria(memoria_global):
 
 MEMORIA_GLOBAL_MAPAS = cargar_memoria()
 
+# --- CLASE DEL AGENTE INTELIGENTE CON APRENDIZAJE ---
 class AgenteRescate:
     def __init__(self, filas=15, columnas=15):
         self.filas = filas
@@ -86,6 +87,10 @@ class AgenteRescate:
         self.estado_mapa_actual = 0
         # 2) REQUISITO: Contador de cuántos movimientos faltan para que cambie el clima
         self.movimientos_para_cambio = 5
+
+    def es_transitable(self, f, c):
+        # LOS MUROS (1) SON ESTÁTICOS Y ESTO LOS BLOQUEA SIEMPRE
+        return 0 <= f < self.filas and 0 <= c < self.columnas and self.mapa_objetos[f][c] != 1
 
     def identificar_y_cargar_mapa(self, matrix_web):
         estructura_pura = [[celda.id for celda in fila] for fila in matrix_web]
@@ -148,44 +153,36 @@ class AgenteRescate:
             f_val, (f, c), camino, g, turnos_sim = heapq.heappop(frontera)
             if (f, c) == meta: return camino + [(f, c)]
             
-            # El estado de visitados ahora debe considerar cuántos turnos nos tomó llegar,
-            # ya que el costo de una casilla cambia según el tiempo proyectado.
             estado_visita = ((f, c), turnos_sim)
             if estado_visita in visitados and visitados[estado_visita] <= g: continue
             visitados[estado_visita] = g
             
             # --- CÁLCULO DE ANTICIPACIÓN TEMPORAL ---
-            # Proyectamos cuántos movimientos faltarían en esta simulación mental
             movs_restantes_sim = self.movimientos_para_cambio - turnos_sim
             estado_mapa_sim = self.estado_mapa_actual
             
-            # Si en la mente del bot ya pasaron los movimientos para el cambio, avanza al siguiente estado
             if movs_restantes_sim <= 0:
-                # Calcula cuántos bloques de 5 turnos enteros han pasado en el futuro
                 bloques_extra = (abs(movs_restantes_sim) // 5) + 1
                 estado_mapa_sim += bloques_extra
             
             for df, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nf, nc = f + df, c + dc
-                if 0 <= nf < self.filas and 0 <= nc < self.columnas and self.mapa_objetos[nf][nc] != 1:
+                # VERIFICACIÓN ESTÁTICA
+                if self.es_transitable(nf, nc):
                     
                     # 1. Costo base del clima del turno presente
                     clima_proyectado = self.mapa_clima[nf][nc]
                     costo_paso = costos_clima[clima_proyectado] + penalizacion
                     
-                    # 2. ANTICIPACIÓN: Si la simulación mental cruza al estado futuro, consulta la memoria
-                    if estado_mapa_sim != self.estado_mapa_actual:
-                        if estado_mapa_sim in memoria_mapa and (nf, nc) in memoria_mapa[estado_mapa_sim]:
-                            historial_futuro = memoria_mapa[estado_mapa_sim][(nf, nc)]
-                            total = sum(historial_futuro.values())
-                            if total > 0:
-                                # El bot predice qué clima habrá allá en ese estado futuro
-                                prob_tormenta = historial_futuro["Tormenta"] / total
-                                prob_lluvia = historial_futuro["Lluvia"] / total
-                                
-                                # Sustituimos el coste del presente por el coste estimado del futuro
-                                costo_futuro_estimado = (prob_tormenta * 20) + (prob_lluvia * 5) + 1
-                                costo_paso = int(costo_futuro_estimado) + penalizacion
+                    # 2. ANTICIPACIÓN (Solo afecta al clima)
+                    if estado_mapa_sim != self.estado_mapa_actual and estado_mapa_sim in memoria_mapa and (nf, nc) in memoria_mapa[estado_mapa_sim]:
+                        historial_futuro = memoria_mapa[estado_mapa_sim][(nf, nc)]
+                        total = sum(historial_futuro.values())
+                        if total > 0:
+                            prob_tormenta = historial_futuro["Tormenta"] / total
+                            prob_lluvia = historial_futuro["Lluvia"] / total
+                            costo_futuro_estimado = (prob_tormenta * 20) + (prob_lluvia * 5) + 1
+                            costo_paso = int(costo_futuro_estimado) + penalizacion
                     
                     nuevo_g = g + costo_paso
                     h = abs(nf - meta[0]) + abs(nc - meta[1])
@@ -195,7 +192,7 @@ class AgenteRescate:
                         (nf, nc), 
                         camino + [(f, c)], 
                         nuevo_g, 
-                        turnos_sim + 1  # Incrementa un turno en la simulación mental
+                        turnos_sim + 1
                     ))
         return None
 
@@ -208,39 +205,41 @@ class AgenteRescate:
             if (f, c) == meta: return camino + [(f, c)]
             for df, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nf, nc = f + df, c + dc
-                if 0 <= nf < self.filas and 0 <= nc < self.columnas and self.mapa_objetos[nf][nc] != 1 and (nf, nc) not in visitados:
+                # VERIFICACIÓN ESTÁTICA
+                if self.es_transitable(nf, nc) and (nf, nc) not in visitados:
                     visitados.add((nf, nc))
                     cola.append(((nf, nc), camino + [(f, c)]))
         return None
 
     def mover_agente(self, nf, nc):
         clima_destino = self.mapa_clima[nf][nc]
-        
-        # Costos de batería de este movimiento
-        costo = 1
-        if clima_destino == "Lluvia": costo += 4
-        if clima_destino == "Tormenta": costo += 19
-        if self.tiene_pasajero: costo += 1
+        costo = 1 + (4 if clima_destino == "Lluvia" else 0) + (19 if clima_destino == "Tormenta" else 0) + (1 if self.tiene_pasajero else 0)
         self.bateria -= costo
         
-        self.posicion_agente = [nf, nc]
-        self.turnos_globales += 1
-        
-        # Actualizamos los dos nuevos contadores que propusiste
-        self.movimientos_para_cambio -= 1
-        clima_cambio = (self.movimientos_para_cambio == 0)
-        
-        if clima_cambio:
-            self.estado_mapa_actual += 1         # Incrementa el estado del mapa
-            self.movimientos_para_cambio = 5     # Resetea el contador regresivo
-            self.actualizar_clima_mapa()         # Ejecuta el cambio físico del clima
-            self.guardar_instantanea_clima_mapa() # Guarda todo el mapa bajo el nuevo estado
-            
         obj = self.mapa_objetos[nf][nc]
-        if obj == 4: self.bateria = min(100, self.bateria + 40)
-        elif obj == 5: self.bateria = 100
-        if obj in [4, 5]: self.mapa_objetos[nf][nc] = 0
         
+        # Lógica de baterías: SOLO borra si es 4 o 5
+        if obj == 4:
+            self.bateria = min(100, self.bateria + 40)
+            self.mapa_objetos[nf][nc] = 0
+        elif obj == 5:
+            self.bateria = 100
+            self.mapa_objetos[nf][nc] = 0
+            
+        # El muro (1) es intocable aquí, no hay código que lo modifique.
+        self.posicion_agente = [nf, nc]
+        
+        self.turnos_globales += 1
+        self.movimientos_para_cambio -= 1
+        clima_cambio = False
+        
+        if self.movimientos_para_cambio == 0:
+            self.estado_mapa_actual += 1
+            self.movimientos_para_cambio = 5
+            self.actualizar_clima_mapa()
+            self.guardar_instantanea_clima_mapa()
+            clima_cambio = True
+            
         return self.bateria > 0, clima_cambio
 
 @app.post("/solve")
@@ -249,12 +248,9 @@ def solve_mission(data: MapData):
     columnas = len(data.matrix[0])
     agente = AgenteRescate(filas=filas, columnas=columnas)
     agente.identificar_y_cargar_mapa(data.matrix)
-    
-    # Sincronizamos los contadores iniciales según la web externa
     agente.personas_pendientes = []
     agente.posicion_agente = [data.start_pos[1], data.start_pos[0]]
     agente.bases = []
-    
     for f in range(filas):
         for c in range(columnas):
             celda_web = data.matrix[f][c]
@@ -266,7 +262,6 @@ def solve_mission(data: MapData):
     if not agente.personas_pendientes or not agente.bases:
         return {"steps": [], "status": "Faltan personas o bases"}
         
-    # Primera captura del mapa al arrancar la petición
     agente.guardar_instantanea_clima_mapa()
         
     algoritmo_elegido = data.algorithm
@@ -315,7 +310,6 @@ def solve_mission(data: MapData):
         continua_vivo, clima_cambio = agente.mover_agente(siguiente_paso[0], siguiente_paso[1])
         ruta_actual.pop(0)
         
-        # REPLANTEAMIENTO: Si el clima cambia físicamente, recalculamos para adaptarnos a sorpresas
         if clima_cambio:
             ruta_actual = []
 
