@@ -56,7 +56,7 @@ function App() {
     }
 
     let murosPuestos = 0;
-    while (murosPuestos < 10) {
+    while (murosPuestos < 20) {
       const [x, y] = obtenerCoordAleatoria();
       if ((x !== 0 || y !== 0) && nuevoMapa[y][x].id === 0) {
         nuevoMapa[y][x].id = 1;
@@ -90,7 +90,7 @@ function App() {
 
         if (nuevoMapa[y][x].id === 0) {
           const randBat = Math.random();
-          if (randBat < 0.10) {
+          if (randBat < 0.05) {
             nuevoMapa[y][x].id = 5; 
           } else if (randBat < 0.20) {
             nuevoMapa[y][x].id = 4; 
@@ -244,21 +244,23 @@ function App() {
           </button>
         </aside>
 
-        {/* MAPA INTERACTIVO */}
+        {/* MAPA INTERACTIVO CORREGIDO */}
         <section className="bg-slate-900 p-2 rounded-xl border-4 border-slate-800 shadow-2xl overflow-auto">
           <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
             {matrix.map((row, y) => row.map((cell, x) => (
               <div key={`${x}-${y}`} onClick={() => handleCellClick(x, y)}
                 className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center cursor-pointer border border-white/5 relative transition-all duration-300
-                  ${cell.id === 1 ? 'bg-slate-700' : 'bg-slate-900'}
-                  ${cell.weather === 'Lluvia' ? 'border-b-blue-500 border-b-2 bg-blue-950/40' : ''}
-                  ${cell.weather === 'Tormenta' ? 'border-b-purple-500 border-b-2 bg-purple-950/50 shadow-inner' : ''}
-                  ${cell.weather === 'Despejado' ? 'border-b-transparent bg-slate-900' : ''}`}>
+                  ${cell.id === 1 ? 'bg-slate-700 border-b-transparent' : ''}
+                  ${cell.id === 8 ? 'bg-emerald-950/30 border-b-transparent' : ''}
+                  ${cell.id !== 1 && cell.id !== 8 && cell.weather === 'Lluvia' ? 'border-b-blue-500 border-b-2 bg-blue-950/40' : ''}
+                  ${cell.id !== 1 && cell.id !== 8 && cell.weather === 'Tormenta' ? 'border-b-purple-500 border-b-2 bg-purple-950/50 shadow-inner' : ''}
+                  ${cell.id !== 1 && cell.id !== 8 && cell.weather === 'Despejado' ? 'border-b-transparent bg-slate-900' : ''}`}>
                 
                 {cell.id === 2 && <span>👤</span>}
                 {cell.id === 4 && <span>🪫</span>}
                 {cell.id === 5 && <span>🔋</span>}
                 {cell.id === 8 && <span>🏠</span>}
+                {cell.id === 1 && <span>🧱</span>}
                 
                 {agentPos[0] === x && agentPos[1] === y && (
                   <div className="absolute inset-1 flex items-center justify-center bg-blue-500 rounded z-10 animate-pulse text-xl shadow-lg">🤖</div>

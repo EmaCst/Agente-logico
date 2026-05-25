@@ -218,7 +218,7 @@ class AgenteRescate:
         
         obj = self.mapa_objetos[nf][nc]
         
-        # Lógica de baterías: SOLO borra si es 4 o 5
+        # Lógica de baterías: SOLO borra si es 4 o 5 (Mantiene intactos los muros ID 1)
         if obj == 4:
             self.bateria = min(100, self.bateria + 40)
             self.mapa_objetos[nf][nc] = 0
@@ -299,7 +299,9 @@ def solve_mission(data: MapData):
                 personas_a_procesar.pop(0) 
             elif not agente.tiene_pasajero and agente.posicion_agente == obj_p:
                 agente.tiene_pasajero = True
-                agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 
+                # CORRECCIÓN: Solo limpia la celda si el objeto en el mapa es efectivamente una persona (ID 2).
+                if agente.mapa_objetos[obj_p[0]][obj_p[1]] == 2:
+                    agente.mapa_objetos[obj_p[0]][obj_p[1]] = 0 
                 if obj_p in personas_a_procesar: personas_a_procesar.remove(obj_p)
             else:
                 personas_a_procesar.pop(0) 
